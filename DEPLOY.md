@@ -69,20 +69,33 @@ Skip `data/cache/` — it rebuilds itself, at the cost of one slow first run.
 If you skip the database entirely the container will create an empty one and
 seed the metric groups, and you start from a blank watchlist.
 
-## 3. Clone the repo onto the NAS
+## 3. Get the source onto the NAS
 
-The image itself comes from GHCR, but the NAS still needs the compose file and
-`.env`, so it needs a checkout. The repo is public — no credentials.
+The application arrives as a prebuilt image from GHCR, but the NAS still needs
+`docker-compose.yml`, `.env` and `scripts/`.
+
+**UGOS ships no `git`**, so download the tarball instead. The repo is public, so
+no credentials:
 
 ```bash
-ssh leedeen@192.168.0.10
 cd /volume1/docker/stock-monitor
-git clone https://github.com/leedeen01/stock-monitor.git src
+curl -L https://github.com/leedeen01/stock-monitor/archive/refs/heads/main.tar.gz -o main.tar.gz
+mkdir -p src && tar xzf main.tar.gz -C src --strip-components=1 && rm main.tar.gz
 ```
 
+`--strip-components=1` drops the `stock-monitor-main/` wrapper directory the
+archive carries. If `curl` is missing, `wget -O main.tar.gz <url>` does the same.
+
+Two alternatives, neither necessary:
+
+- **Real git, via Docker** — `docker run --rm -v /volume1/docker/stock-monitor:/w
+  -w /w alpine/git clone https://github.com/leedeen01/stock-monitor.git src`.
+  Worth it only if you want to make local commits on the NAS.
+- **`sudo apt install git`** — UGOS is Debian-based so this may work, but it is
+  not a supported surface and firmware updates can revert it.
+
 Without SSH: download the ZIP from GitHub and copy the contents into
-`\\nastydeen\docker\stock-monitor\src\`. Only `docker-compose.yml`, `.env` and
-`scripts/` are actually read on the NAS — the rest is along for the ride.
+`\\nastydeen\docker\stock-monitor\src\`.
 
 ## 4. Create the Cloudflare tunnel
 
@@ -153,7 +166,7 @@ touched by an update — that is the entire point of the bind mount.
 To take an update immediately:
 
 ```bash
-cd /volume1/docker/stock-monitor/src && git pull && docker compose pull && docker compose up -d
+cd /volume1/docker/stock-monitor/src && docker compose pull && docker compose up -d
 ```
 
 To take it automatically, register `scripts/autoupdate.sh` as an hourly task
