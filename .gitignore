@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Data is state, not source. 36 MB of database plus a ~50 MB EDGAR cache, both
+# reproducible from scratch. It reaches the NAS over SMB, not through git.
+data/
+
+# Secrets. .env carries the Cloudflare tunnel token.
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

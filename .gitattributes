@@ -1,0 +1,9 @@
+# The repo is edited on Windows and executed on Linux. Anything the container
+# runs must keep LF endings — a CRLF shebang makes the kernel look for an
+# interpreter literally named "/bin/sh\r", and the error says "no such file or
+# directory" while pointing at a file that plainly exists.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+entrypoint.sh   text eol=lf

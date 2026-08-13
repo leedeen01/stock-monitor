@@ -1,0 +1,9 @@
+# Runtime dependencies for the ingest pipeline.
+#
+# Only direct dependencies are pinned. Transitive ones (pandas, numpy,
+# curl_cffi, ...) are left to pip, deliberately: this venv is built on Windows
+# for development and on Linux inside the container, and pinning the full
+# closure would pin platform-specific wheels that do not exist on the other.
+
+yfinance==1.5.2
+lxml==6.1.1

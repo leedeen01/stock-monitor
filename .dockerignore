@@ -1,0 +1,15 @@
+# Keep the build context small. node_modules alone is 376 MB and gets rebuilt
+# inside the image anyway; data/ is 90 MB of database and cache that belongs in
+# the bind mount, not baked into a layer.
+.git
+.venv
+data/
+**/node_modules
+**/.next
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example

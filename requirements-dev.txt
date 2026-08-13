@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Tests do not ship in the container image.
+pytest==9.1.1
