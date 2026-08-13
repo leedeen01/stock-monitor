@@ -97,18 +97,62 @@ Two alternatives, neither necessary:
 Without SSH: download the ZIP from GitHub and copy the contents into
 `\\nastydeen\docker\stock-monitor\src\`.
 
-## 4. Create the Cloudflare tunnel
+## 4. Set up Cloudflare
 
-1. Add your domain to Cloudflare (free plan is fine).
-2. **Zero Trust → Networks → Tunnels → Create a tunnel** → type `Cloudflared`.
-3. Copy the token out of the install command it shows you. That token is a
-   credential — it grants inbound access to this container.
-4. Add a **public hostname**: pick a subdomain, service type `HTTP`, URL
-   `app:3000`. That name resolves on the compose network — do not use
-   `localhost`, and do not use the NAS LAN IP.
+### A. Get a domain into Cloudflare
 
-Nothing else is needed on the Cloudflare side. Skip Access — the hostname
-serves the app directly to anyone who requests it, which is the intent.
+A named tunnel needs a zone in your account. The app lives on a subdomain like
+`stocks.yourdomain.com`, but the zone has to exist.
+
+- **Register through Cloudflare** — Domain Registration → Register Domains.
+  Wholesale pricing, no markup, ~$10–12/yr for a `.com`, and it arrives already
+  configured.
+- **Register elsewhere** (Porkbun, Namecheap — a `.xyz` can be a couple of
+  dollars), then **Add a domain** in Cloudflare and change the nameservers at
+  your registrar.
+
+Wait for the zone to read **Active** before step C. A hostname created against
+a pending zone looks correct and simply fails to resolve.
+
+### B. Create the tunnel
+
+1. Main dashboard → **Networking → Tunnels**
+   (`dash.cloudflare.com/?to=/:account/tunnels`).
+2. **Create a tunnel** → connector type **Cloudflared**.
+3. Name it — `nastydeen`.
+4. Copy **only the token** from the install command it shows: the long string
+   after `--token`. Do not run the command; compose already runs cloudflared.
+
+> Tunnel management moved into the main dashboard on 2026-02-20. Older guides
+> say *Zero Trust → Networks → Tunnels*; that section is now called
+> **Connectors** and is for access policies and private networks. A plain
+> public hostname needs no Zero Trust onboarding.
+
+### C. Add the public hostname
+
+| Field | Value |
+|---|---|
+| Subdomain | `stocks`, or anything you like |
+| Domain | your zone |
+| Path | *leave empty* |
+| Service type | `HTTP` — not HTTPS; the hop is inside Docker |
+| URL | `app:3000` |
+
+`app` is the compose service name, resolved by Docker's internal DNS.
+`localhost` would point cloudflared at itself and return 502; the NAS LAN IP
+fails too, because the app publishes no ports.
+
+Saving creates the DNS record automatically. If offered the option to protect
+the hostname with Access, decline — that is the login gate, and this deployment
+is intentionally public.
+
+### D. Hand the token to Docker
+
+It goes in `.env` as `TUNNEL_TOKEN` (next step). The tunnel reads **Down** until
+`cloudflared` starts — expected before deploying, not a fault.
+
+**The token is a credential.** Anyone holding it can run a connector for your
+tunnel. `.env` is gitignored; never put it in the compose file or a commit.
 
 ## 5. Deploy
 
