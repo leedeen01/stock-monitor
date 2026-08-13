@@ -69,10 +69,20 @@ Skip `data/cache/` — it rebuilds itself, at the cost of one slow first run.
 If you skip the database entirely the container will create an empty one and
 seed the metric groups, and you start from a blank watchlist.
 
-## 3. Copy the source across
+## 3. Clone the repo onto the NAS
 
-Everything except `.venv`, `node_modules`, `.next` and `data` — the same set
-`.dockerignore` excludes. Into `\\nastydeen\docker\stock-monitor\src\`.
+The image itself comes from GHCR, but the NAS still needs the compose file and
+`.env`, so it needs a checkout. The repo is public — no credentials.
+
+```bash
+ssh leedeen@192.168.0.10
+cd /volume1/docker/stock-monitor
+git clone https://github.com/leedeen01/stock-monitor.git src
+```
+
+Without SSH: download the ZIP from GitHub and copy the contents into
+`\\nastydeen\docker\stock-monitor\src\`. Only `docker-compose.yml`, `.env` and
+`scripts/` are actually read on the NAS — the rest is along for the ride.
 
 ## 4. Create the Cloudflare tunnel
 
@@ -99,9 +109,30 @@ TZ=Asia/Singapore
 DAILY_CRON=0 6 * * *
 ```
 
-Then **Docker → Project → Create**, point it at
-`/volume1/docker/stock-monitor/src`, and deploy. The first build runs `npm ci`
-and `pip install` on the NAS and takes several minutes.
+### Make the package public, once
+
+The image is built by GitHub Actions and published to
+`ghcr.io/leedeen01/stock-monitor`. **GHCR packages start private even when the
+repo is public**, so the NAS would get `denied` on pull until you change it —
+this is the single most common thing to trip over here.
+
+After the first green build: GitHub → your profile → **Packages** →
+`stock-monitor` → **Package settings** → **Change visibility** → Public.
+
+(Keeping it private is fine too, but then the NAS needs
+`docker login ghcr.io` with a personal access token carrying `read:packages`.)
+
+### Pull and start
+
+```bash
+cd /volume1/docker/stock-monitor/src
+docker compose pull
+docker compose up -d
+```
+
+Or **Docker → Project → Create** pointed at
+`/volume1/docker/stock-monitor/src`. Startup is now a download rather than a
+build — under a minute instead of several.
 
 ## 6. Verify
 
@@ -116,9 +147,20 @@ and `pip install` on the NAS and takes several minutes.
 
 ## Operating it
 
-**Update after a code change.** Copy the changed files into `src/`, then
-Project → rebuild. `data/` is untouched by rebuilds; that is the entire point
-of the bind mount.
+**Update after a code change.** Push to `main`. GitHub Actions builds and
+publishes the image; the NAS picks it up on its next check. `data/` is never
+touched by an update — that is the entire point of the bind mount.
+
+To take an update immediately:
+
+```bash
+cd /volume1/docker/stock-monitor/src && git pull && docker compose pull && docker compose up -d
+```
+
+To take it automatically, register `scripts/autoupdate.sh` as an hourly task
+under **Control Panel → Task Scheduler**. It compares image IDs and only
+restarts when the registry actually has something new, so running it often
+costs nothing. Avoid scheduling it at 06:00, when the daily refresh is running.
 
 **Run the refresh by hand.** The Refresh Now button does this. From a shell:
 
@@ -144,6 +186,8 @@ Everything else rebuilds from EDGAR.
 | Hostname unreachable from outside | Tunnel not connected — check the `cloudflared` container logs, and that the public hostname points at `app:3000` and not `localhost` |
 | Daily job never runs | `docker exec stock-monitor crontab -l -u root` and `cat /app/data/logs/cron.log`. Cron gets a scrubbed environment; the entrypoint writes the needed vars into `/etc/cron.d/stock-monitor` |
 | SEC requests return 403 | `SEC_CONTACT` is unset or empty — EDGAR rejects requests without a real contact address |
+| `docker compose pull` says `denied` | The GHCR package is still private. Set it public in Package settings, or `docker login ghcr.io` with a `read:packages` token |
+| Pushed to main but nothing changed | The workflow skips doc-only commits (`paths-ignore`). Check the Actions tab; run it manually with **Run workflow** if needed |
 | `no such file or directory` on entrypoint.sh | CRLF line endings. `.gitattributes` forces LF; if you copied over SMB rather than cloning, re-copy |
 
 ## Locking it down later
@@ -173,7 +217,8 @@ guard. Ask if it becomes worth it.
 - Runs as root inside the container, so the bind mount needs no UID matching.
   Acceptable for a single-user app on a home NAS; worth revisiting if this ever
   gets exposed more widely.
-- The image build happens on the NAS. Fine on any NASync CPU, just slow the
-  first time. A registry (GHCR is free) would move the build to your PC.
+- The image is built by GitHub Actions for `linux/amd64` only, which every
+  NASync model is. Moving to different hardware means adding `linux/arm64` to
+  the `platforms` list in the workflow.
 - One container runs both Node and Python because the Add Stock and Refresh
   buttons spawn Python directly. Splitting them needs an API layer first.

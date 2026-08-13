@@ -10,8 +10,17 @@
 
 services:
   app:
+    # Built by .github/workflows/build.yml on every push to main and published
+    # to GHCR, so the NAS pulls a finished image rather than compiling one.
+    #
+    #   on the NAS   docker compose pull && docker compose up -d
+    #   locally      docker compose up -d --build   (uses the build: below)
+    #
+    # Both keys are present on purpose: `pull` always fetches the published
+    # image, `--build` always compiles from this checkout. Neither surprises
+    # the other as long as you name which one you want.
+    image: ghcr.io/leedeen01/stock-monitor:latest
     build: .
-    image: stock-monitor:latest
     container_name: stock-monitor
     restart: unless-stopped
     environment:

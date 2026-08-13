@@ -1,0 +1,79 @@
+# Build the container on GitHub and publish it to GHCR, so the NAS pulls a
+# finished image instead of compiling one.
+#
+# Two things this buys beyond speed: the NAS stops spending several minutes on
+# `npm ci` and a Next build for every change, and the Dockerfile gets exercised
+# on every push — a build that breaks fails here, loudly, instead of failing
+# during a deploy.
+
+name: Build and publish image
+
+on:
+  push:
+    branches: [main]
+    # Documentation changes cannot affect the image, and a rebuild would
+    # republish `latest` and trigger a pointless restart on the NAS.
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - ".gitattributes"
+      - "scripts/**"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # Provided automatically; no secret to create.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # The NASync line is Intel throughout, so a single-arch build keeps
+          # this to a couple of minutes. Add linux/arm64 only if the target
+          # hardware ever changes.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache between runs: npm ci and pip install dominate the
+          # build, and both are cacheable when their manifests are unchanged.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### Image published" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
