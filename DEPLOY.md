@@ -109,18 +109,17 @@ TZ=Asia/Singapore
 DAILY_CRON=0 6 * * *
 ```
 
-### Make the package public, once
+### Package visibility — already handled
 
 The image is built by GitHub Actions and published to
-`ghcr.io/leedeen01/stock-monitor`. **GHCR packages start private even when the
-repo is public**, so the NAS would get `denied` on pull until you change it —
-this is the single most common thing to trip over here.
+`ghcr.io/leedeen01/stock-monitor`. GHCR packages are often private by default,
+which would make the NAS fail with `denied` on pull — but this one came out
+public, verified by fetching its manifest anonymously. **The NAS needs no
+`docker login`.**
 
-After the first green build: GitHub → your profile → **Packages** →
-`stock-monitor` → **Package settings** → **Change visibility** → Public.
-
-(Keeping it private is fine too, but then the NAS needs
-`docker login ghcr.io` with a personal access token carrying `read:packages`.)
+If that ever changes: GitHub → your profile → **Packages** → `stock-monitor` →
+**Package settings** → **Change visibility** → Public. Or keep it private and
+run `docker login ghcr.io` on the NAS with a token carrying `read:packages`.
 
 ### Pull and start
 
