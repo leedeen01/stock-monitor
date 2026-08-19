@@ -20,6 +20,7 @@ Runs from Windows Task Scheduler. Three design choices worth knowing:
    long it's been broken.
 """
 
+import argparse
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ import alerts
 import backfill
 import db
 import derive
+import jobs
 import prices
 import segments
 from config import DATA_DIR
@@ -116,7 +118,7 @@ def finish_run(conn, run_id: int, status: str, **fields) -> None:
     conn.commit()
 
 
-def main() -> int:
+def main(job_id: int | None = None) -> int:
     conn = db.connect()
     db.init_schema(conn)
     run_id = start_run(conn)
@@ -124,6 +126,7 @@ def main() -> int:
     tickers = _supported_tickers(conn)
     if not tickers:
         finish_run(conn, run_id, "skipped", detail="watchlist is empty")
+        jobs.finish(conn, job_id, "ok", "Nothing on the watchlist.")
         print("nothing on the watchlist")
         return 0
 
@@ -138,6 +141,7 @@ def main() -> int:
 
     # Fundamentals first. companyfacts is cached for a day, so this is close to
     # free most days and picks up new filings the moment they land.
+    jobs.set_step(conn, job_id, "Checking EDGAR for new filings")
     print("\n--- fundamentals ---")
     for ticker in tickers:
         try:
@@ -146,6 +150,7 @@ def main() -> int:
             failures.append(f"{ticker} fundamentals: {type(exc).__name__}: {exc}")
             print(f"{ticker}: FAILED - {exc}")
 
+    jobs.set_step(conn, job_id, "Fetching the latest closes")
     print("\n--- prices ---")
     for ticker in tickers:
         try:
@@ -171,12 +176,15 @@ def main() -> int:
                    latest_session=after_session, detail=detail)
         # ASCII only in log output: Task Scheduler runs without a UTF-8 console,
         # so anything fancier lands in the log file as mojibake.
+        jobs.finish(conn, job_id, "ok",
+                    f"Already current - no new session since {after_session}.")
         print(f"\nno new market data - latest session is still {after_session}")
         return 0
 
     reason = f"{new_rows:,} new price rows"
     if new_filing:
         reason += f", new filing ({after_filing})"
+    jobs.set_step(conn, job_id, "Recomputing the ratio series")
     print(f"\n--- deriving ({reason}) ---")
     for ticker in tickers:
         try:
@@ -189,6 +197,7 @@ def main() -> int:
     # several fetches per ticker, so it hangs off the new-filing signal rather
     # than running daily.
     if new_filing:
+        jobs.set_step(conn, job_id, "Refreshing product revenue")
         print("\n--- revenue by product (new filing detected) ---")
         for ticker in tickers:
             try:
@@ -203,6 +212,7 @@ def main() -> int:
     # Alerts run after derivation, since a crossing is defined against the
     # freshly derived session. Nothing to evaluate on a day with no new
     # session — the earlier early-return already covered that case.
+    jobs.set_step(conn, job_id, "Evaluating alerts")
     print("\n--- alerts ---")
     try:
         fired = alerts.evaluate_all(conn, verbose=True)
@@ -224,16 +234,22 @@ def main() -> int:
     for failure in failures:
         print(f"  FAILURE: {failure}")
 
+    jobs.finish(conn, job_id, "ok" if not failures else "error",
+                f"Updated - {new_rows:,} new price rows, session {after_session}."
+                if not failures else f"Ran with failures: {detail[:300]}")
     conn.close()
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
+    _parser = argparse.ArgumentParser(description="Daily refresh")
+    _parser.add_argument("--job-id", type=int, default=None)
+    _ARGS = _parser.parse_args()
     _log = _open_log()
     sys.stdout = _Tee(sys.__stdout__, _log)
     sys.stderr = _Tee(sys.__stderr__, _log)
     try:
-        sys.exit(main())
+        sys.exit(main(_ARGS.job_id))
     except Exception:
         # Last resort: mark the run failed so the UI shows staleness rather than
         # leaving a 'running' row behind forever.
@@ -246,6 +262,7 @@ if __name__ == "__main__":
             ).fetchone()
             if row:
                 finish_run(conn, row["id"], "error", detail=traceback.format_exc()[-500:])
+            jobs.finish(conn, _ARGS.job_id, "error", traceback.format_exc()[-300:])
         except Exception:
             pass
         sys.exit(2)

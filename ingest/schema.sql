@@ -268,3 +268,31 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     detail      TEXT,
     PRIMARY KEY (ticker, source, ran_at)
 );
+
+-- Async jobs started from the UI.
+--
+-- The web app used to await these subprocesses inside a server action, which
+-- held the action pending for minutes. Next queues client navigations behind an
+-- in-flight server action, so clicking into a stock did nothing until a refresh
+-- finished. Now the action inserts a row here, spawns the work detached, and
+-- returns immediately; the browser polls /api/jobs.
+--
+-- The row is inserted by whoever STARTS the job, before the process is spawned.
+-- That ordering matters: if Python created it, the first poll would arrive
+-- before the row existed and the UI would conclude nothing was running.
+--
+-- Separate from `pipeline_runs`, which stays the scheduler's own record of what
+-- the data reflects. A job is "did this button work"; a run is "how fresh are
+-- these numbers".
+CREATE TABLE IF NOT EXISTS jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,          -- refresh | add
+    target      TEXT,                   -- ticker, for add
+    status      TEXT NOT NULL,          -- running | ok | error
+    step        TEXT,                   -- current phase, shown in the UI
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    detail      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_active ON jobs (status, id DESC);

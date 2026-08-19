@@ -1,31 +1,82 @@
 "use server";
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { refresh } from "next/cache";
 
 import { db } from "@/lib/db";
 import { INGEST_DIR, PYTHON } from "@/lib/paths";
 
-const run = promisify(execFile);
+/**
+ * Long work runs detached, not awaited.
+ *
+ * These actions used to `await` the Python pipeline — 30-60s for an add, up to
+ * several minutes for a refresh. A server action that stays pending blocks more
+ * than its own button: Next queues client navigations behind an in-flight
+ * action, so clicking into a stock did nothing until the job finished.
+ *
+ * Now each action inserts a `jobs` row, spawns the process detached, and
+ * returns in milliseconds. The browser polls /api/jobs for progress. Output
+ * goes to data/logs/ rather than a pipe, which is why stdio can be discarded —
+ * both scripts tee to a log file of their own.
+ */
 
-export type AddStockResult = {
+export type StartResult = {
   ok: boolean;
+  jobId?: number;
   message: string;
 };
 
+/** A job still 'running' after this lost its process; see ingest/jobs.py. */
+const STALE_JOB_MINUTES = 45;
+
+function expireStaleJobs() {
+  const cutoff = new Date(Date.now() - STALE_JOB_MINUTES * 60_000).toISOString();
+  db()
+    .prepare(
+      `UPDATE jobs
+          SET status = 'error', finished_at = ?, step = NULL,
+              detail = COALESCE(detail, 'process vanished before reporting a result')
+        WHERE status = 'running' AND started_at < ?`,
+    )
+    .run(new Date().toISOString(), cutoff);
+}
+
 /**
- * Add a ticker and backfill it.
- *
- * This runs the Python pipeline synchronously — EDGAR fetch, price history,
- * ratio derivation — which takes 10-30s for a new ticker. Awaiting keeps the
- * result definite: when the form returns, either the row is on the grid with
- * real numbers behind it, or you get the reason it isn't.
+ * Insert the job row, then spawn. That order is deliberate — if Python created
+ * the row, the first poll would land before it existed and the UI would decide
+ * nothing was running.
  */
+function startJob(
+  script: string,
+  args: string[],
+  kind: "refresh" | "add",
+  target: string | null,
+  firstStep: string,
+): number {
+  const info = db()
+    .prepare(
+      "INSERT INTO jobs (kind, target, status, step, started_at) VALUES (?, ?, 'running', ?, ?)",
+    )
+    .run(kind, target, firstStep, new Date().toISOString());
+
+  const jobId = Number(info.lastInsertRowid);
+
+  const child = spawn(PYTHON, [script, ...args, "--job-id", String(jobId)], {
+    cwd: INGEST_DIR,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  // Let it outlive this request.
+  child.unref();
+
+  return jobId;
+}
+
 export async function addStock(
-  _prev: AddStockResult | null,
+  _prev: StartResult | null,
   formData: FormData,
-): Promise<AddStockResult> {
+): Promise<StartResult> {
   const ticker = String(formData.get("ticker") ?? "")
     .trim()
     .toUpperCase();
@@ -41,178 +92,66 @@ export async function addStock(
     return { ok: false, message: "Pick at least one group." };
   }
 
-  try {
-    await run(PYTHON, ["backfill.py", ticker], {
-      cwd: INGEST_DIR,
-      timeout: 180_000,
-    });
+  const conn = db();
+  expireStaleJobs();
 
-    const conn = db();
-    const row = conn
-      .prepare("SELECT supported, unsupported_reason FROM watchlist WHERE ticker = ?")
-      .get(ticker) as
-      | { supported: number; unsupported_reason: string | null }
-      | undefined;
-
-    if (!row) {
-      return { ok: false, message: `${ticker} was not found in the SEC registry.` };
-    }
-    if (!row.supported) {
-      return {
-        ok: false,
-        message: `${ticker} cannot be tracked: ${row.unsupported_reason}`,
-      };
-    }
-
-    await run(PYTHON, ["prices.py", ticker], { cwd: INGEST_DIR, timeout: 180_000 });
-    await run(PYTHON, ["derive.py", ticker], { cwd: INGEST_DIR, timeout: 180_000 });
-
-    // Product revenue. Deliberately non-fatal: plenty of companies publish no
-    // breakdown that reconciles (AMD, Chevron, ExxonMobil), and that is a fact
-    // about the filer rather than a failure to add the stock. The scheduled
-    // job only refreshes segments when a new 10-K lands, so without this a
-    // newly added ticker would show nothing until some unrelated filing
-    // happened to trigger it.
-    await run(PYTHON, ["segments.py", ticker], {
-      cwd: INGEST_DIR,
-      timeout: 300_000,
-    }).catch(() => undefined);
-
-    // Group assignment, and the first group becomes the default view.
-    const insert = conn.prepare(
-      "INSERT OR IGNORE INTO stock_groups (ticker, group_id) VALUES (?, ?)",
-    );
-    for (const id of groupIds) insert.run(ticker, id);
-    conn
-      .prepare("UPDATE watchlist SET default_group_id = ? WHERE ticker = ?")
-      .run(groupIds[0], ticker);
-
-    // Record the price at the moment of adding, so the grid can show
-    // since-added return.
-    const latest = conn
-      .prepare("SELECT close FROM ratios_daily WHERE ticker = ? ORDER BY date DESC LIMIT 1")
-      .get(ticker) as { close: number | null } | undefined;
-    if (latest?.close) {
-      conn
-        .prepare("UPDATE watchlist SET added_price = ? WHERE ticker = ? AND added_price IS NULL")
-        .run(latest.close, ticker);
-    }
-
-    const count = conn
-      .prepare("SELECT COUNT(*) c FROM ratios_daily WHERE ticker = ?")
-      .get(ticker) as { c: number };
-
-    const segmentLines = conn
-      .prepare(
-        "SELECT COUNT(DISTINCT label) c FROM segment_revenue WHERE ticker = ? AND is_subtotal = 0",
-      )
-      .get(ticker) as { c: number };
-
-    refresh();
-    return {
-      ok: true,
-      message:
-        `Added ${ticker} — ${count.c.toLocaleString()} days of derived history` +
-        (segmentLines.c > 0
-          ? `, ${segmentLines.c} product lines.`
-          : ". No product breakdown published."),
-    };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `Backfill failed: ${detail.slice(0, 300)}` };
+  const already = conn
+    .prepare("SELECT ticker FROM watchlist WHERE ticker = ?")
+    .get(ticker);
+  if (already) {
+    return { ok: false, message: `${ticker} is already on the watchlist.` };
   }
+
+  const inFlight = conn
+    .prepare(
+      "SELECT id FROM jobs WHERE kind = 'add' AND target = ? AND status = 'running'",
+    )
+    .get(ticker);
+  if (inFlight) {
+    return { ok: false, message: `${ticker} is already being added.` };
+  }
+
+  const jobId = startJob(
+    "add_ticker.py",
+    [ticker, "--groups", groupIds.join(",")],
+    "add",
+    ticker,
+    `Starting ${ticker}`,
+  );
+
+  return { ok: true, jobId, message: `Adding ${ticker}…` };
 }
 
-export type RefreshResult = {
-  ok: boolean;
-  message: string;
-};
-
-/** A run still marked 'running' after this long crashed without recording it. */
-const STALE_RUN_MINUTES = 30;
-
-/**
- * Run the daily refresh on demand.
- *
- * Invokes `daily_update.py` directly rather than poking the Windows task, so
- * this takes the identical code path — same skip logic, same logging, same
- * pipeline_runs record — while staying synchronous enough to report what
- * actually happened. Start-ScheduledTask would be fire-and-forget with nothing
- * to show the user.
- */
-export async function refreshNow(): Promise<RefreshResult> {
+export async function refreshNow(): Promise<StartResult> {
   const conn = db();
+  expireStaleJobs();
 
-  // The scheduled job may already be mid-run. Two concurrent derivations would
-  // both DELETE and rewrite ratios_daily for the same tickers.
-  const inFlight = conn
+  const jobRunning = conn
+    .prepare("SELECT id FROM jobs WHERE kind = 'refresh' AND status = 'running'")
+    .get();
+  if (jobRunning) {
+    return { ok: false, message: "A refresh is already running." };
+  }
+
+  // The scheduled job leaves no `jobs` row, so check its record too. Two
+  // concurrent derivations would both DELETE and rewrite ratios_daily.
+  const scheduled = conn
     .prepare(
       "SELECT started_at FROM pipeline_runs WHERE status = 'running' ORDER BY id DESC LIMIT 1",
     )
     .get() as { started_at: string } | undefined;
-
-  if (inFlight) {
-    const minutes = (Date.now() - new Date(inFlight.started_at).getTime()) / 60_000;
-    if (minutes < STALE_RUN_MINUTES) {
+  if (scheduled) {
+    const minutes = (Date.now() - new Date(scheduled.started_at).getTime()) / 60_000;
+    if (minutes < STALE_JOB_MINUTES) {
       return {
         ok: false,
-        message: `A refresh started ${Math.round(minutes)}m ago is still running.`,
+        message: `The scheduled refresh started ${Math.round(minutes)}m ago is still running.`,
       };
     }
   }
 
-  try {
-    // Exit code 1 means "ran, but some tickers failed" — a real outcome, not a
-    // failure to run. So the database is the source of truth here, not the
-    // exit status, and a non-zero exit is deliberately not rethrown.
-    await run(PYTHON, ["daily_update.py"], {
-      cwd: INGEST_DIR,
-      timeout: 600_000,
-      maxBuffer: 10 * 1024 * 1024,
-    }).catch(() => undefined);
-
-    const row = conn
-      .prepare(
-        `SELECT status, new_price_rows, latest_session, detail
-         FROM pipeline_runs ORDER BY id DESC LIMIT 1`,
-      )
-      .get() as
-      | {
-          status: string; new_price_rows: number | null;
-          latest_session: string | null; detail: string | null;
-        }
-      | undefined;
-
-    refresh();
-
-    if (!row) return { ok: false, message: "Refresh produced no run record." };
-
-    switch (row.status) {
-      case "ok":
-        return {
-          ok: true,
-          message: `Updated — ${row.new_price_rows ?? 0} new price rows, session ${row.latest_session}.`,
-        };
-      case "skipped":
-        return {
-          ok: true,
-          message: `Already current — no new session since ${row.latest_session}.`,
-        };
-      case "partial":
-        return {
-          ok: false,
-          message: `Ran with failures: ${(row.detail ?? "").slice(0, 200)}`,
-        };
-      default:
-        return {
-          ok: false,
-          message: `Refresh ${row.status}: ${(row.detail ?? "").slice(0, 200)}`,
-        };
-    }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `Refresh failed: ${detail.slice(0, 300)}` };
-  }
+  const jobId = startJob("daily_update.py", [], "refresh", null, "Starting");
+  return { ok: true, jobId, message: "Refresh started." };
 }
 
 export type RemoveStockResult = {
@@ -227,6 +166,8 @@ export type RemoveStockResult = {
  * assignments go. Re-adding is then instant and touches no network, and an
  * accidental click costs nothing. Purging the underlying data is available via
  * `manage.py remove --purge`, where it takes a deliberate flag.
+ *
+ * Stays synchronous: it is two DELETEs, not a pipeline.
  */
 export async function removeStock(ticker: string): Promise<RemoveStockResult> {
   const symbol = ticker.trim().toUpperCase();

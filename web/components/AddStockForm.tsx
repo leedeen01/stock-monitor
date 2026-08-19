@@ -1,9 +1,9 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
-import { useFormStatus } from "react-dom";
 
-import { addStock, type AddStockResult } from "@/app/actions";
+import { addStock, type StartResult } from "@/app/actions";
+import { useAdoptRunning, useJob } from "@/components/useJob";
 import type { GroupRef } from "@/lib/queries";
 
 /**
@@ -13,36 +13,50 @@ import type { GroupRef } from "@/lib/queries";
  * than expanding in the header flow — opening the form used to reflow the
  * header and shove the whole table down.
  *
- * Dismissal uses a document listener rather than a backdrop element, so a click
- * on a neighbouring control still reaches it instead of being swallowed. While a
- * backfill is running the panel refuses to close: the request takes 30-60s and
- * losing the progress text mid-flight would leave you with no idea whether it
- * worked.
+ * Submitting no longer waits for the backfill. The action starts a detached job
+ * and returns immediately, so the panel closes at once and progress shows
+ * beside the trigger. Previously the popover had to refuse to close for 30-60s
+ * to avoid losing the only progress indicator, which also froze navigation.
  */
 export function AddStockForm({ groups }: { groups: GroupRef[] }) {
   const [open, setOpen] = useState(false);
-  const [state, action] = useActionState<AddStockResult | null, FormData>(
+  const [state, action] = useActionState<StartResult | null, FormData>(
     addStock,
     null,
   );
   const root = useRef<HTMLDivElement>(null);
-  const pendingRef = useRef(false);
 
-  // Close once a ticker lands; leave it open on failure so the message is
-  // attached to the form that produced it and the input can be corrected.
+  const [jobId, setJobId] = useState<number | null>(null);
+  const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const job = useJob(jobId, (finished) => {
+    setNotice({
+      text: finished.detail ?? (finished.status === "ok" ? "Added." : "Add failed."),
+      ok: finished.status === "ok",
+    });
+    setJobId(null);
+  });
+
+  useAdoptRunning("add", setJobId);
+
+  // A started job closes the panel; a rejected one keeps it open so the message
+  // stays attached to the input that produced it.
   useEffect(() => {
-    if (state?.ok) setOpen(false);
+    if (state?.ok && state.jobId !== undefined) {
+      setJobId(state.jobId);
+      setNotice(null);
+      setOpen(false);
+    }
   }, [state]);
 
   useEffect(() => {
     if (!open) return;
 
     const onPointerDown = (e: MouseEvent) => {
-      if (pendingRef.current) return;
       if (!root.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !pendingRef.current) setOpen(false);
+      if (e.key === "Escape") setOpen(false);
     };
 
     document.addEventListener("mousedown", onPointerDown);
@@ -53,19 +67,28 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
     };
   }, [open]);
 
+  const running = jobId !== null;
+
   return (
     <div ref={root} className="relative flex items-center gap-3">
-      {state?.message && !open && (
-        <span
-          className={`max-w-xs truncate text-xs ${
-            state.ok
-              ? "text-emerald-600 dark:text-emerald-400"
-              : "text-rose-600 dark:text-rose-400"
-          }`}
-          title={state.message}
-        >
-          {state.message}
+      {running ? (
+        <span className="max-w-xs truncate text-xs text-neutral-500 dark:text-neutral-400">
+          {job?.step ?? "Starting…"}
         </span>
+      ) : (
+        notice &&
+        !open && (
+          <span
+            className={`max-w-xs truncate text-xs ${
+              notice.ok
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-rose-600 dark:text-rose-400"
+            }`}
+            title={notice.text}
+          >
+            {notice.text}
+          </span>
+        )
       )}
 
       <button
@@ -91,10 +114,6 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
           // at 375px the button's right edge sits at 321, so a 338px panel
           // hangs 17px off the left. Centring on the viewport is immune to
           // wherever the button ends up.
-          //
-          // Widths avoid calc(): Tailwind arbitrary values can't hold bare
-          // spaces, and `calc(100vw-2rem)` without them is invalid CSS, so the
-          // rule is dropped and the panel collapses to content width.
           className="fixed left-4 right-4 top-1/2 z-40 -translate-y-1/2 rounded-lg border border-neutral-200 bg-white p-4 text-left shadow-xl dark:border-neutral-700 dark:bg-neutral-900 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[22rem] sm:max-w-[90vw] sm:translate-y-0"
         >
           <form action={action}>
@@ -128,7 +147,16 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
               </div>
             </fieldset>
 
-            <Submit pendingRef={pendingRef} />
+            <button
+              type="submit"
+              className="mt-3 w-full rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
+            >
+              Add and backfill
+            </button>
+
+            <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+              Runs in the background — you can keep using the page.
+            </p>
 
             {state?.message && !state.ok && (
               <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">
@@ -139,32 +167,5 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
         </div>
       )}
     </div>
-  );
-}
-
-function Submit({
-  pendingRef,
-}: {
-  pendingRef: React.RefObject<boolean>;
-}) {
-  const { pending } = useFormStatus();
-  // Surfaced to the parent so an outside click can't dismiss a running backfill.
-  pendingRef.current = pending;
-
-  return (
-    <>
-      <button
-        type="submit"
-        disabled={pending}
-        className="mt-3 w-full rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
-      >
-        {pending ? "Fetching filings…" : "Add and backfill"}
-      </button>
-      {pending && (
-        <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
-          Pulling EDGAR filings and deriving history. This takes 30-60 seconds.
-        </p>
-      )}
-    </>
   );
 }
