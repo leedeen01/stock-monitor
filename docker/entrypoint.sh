@@ -13,12 +13,23 @@ mkdir -p "$DATA_DIR/logs" "$DATA_DIR/cache"
 # on every page rather than anything diagnosable. Seed a schema instead: that
 # makes a from-scratch deploy work, and a deploy where stocks.db was copied in
 # skips this entirely.
+FRESH=0
 if [ ! -f "$DB_PATH" ]; then
+    FRESH=1
     echo "entrypoint: no database at $DB_PATH - creating an empty one"
     echo "entrypoint: (if you meant to bring existing data, stop here and copy"
     echo "entrypoint:  stocks.db into the host folder mapped to /app/data)"
-    cd /app/ingest
-    "$VENV_PY" db.py
+fi
+
+# Applied on every start, not only when the database is absent. init_schema is
+# idempotent - CREATE TABLE IF NOT EXISTS plus additive column migrations - and
+# this is how a release that needs a new table reaches a database that already
+# exists. Without it, such a release starts cleanly and then fails on whatever
+# needed the table, which is a far worse way to find out.
+cd /app/ingest
+"$VENV_PY" db.py
+
+if [ "$FRESH" = "1" ]; then
     "$VENV_PY" groups.py || echo "entrypoint: group seeding failed, continuing"
 fi
 
