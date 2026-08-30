@@ -84,3 +84,90 @@ def test_the_publication_lag_prevents_lookahead():
     filed = yfd._filed_at(pd.Timestamp("2025-12-31"))
     assert filed > "2025-12-31", "results cannot be known before they are published"
     assert filed.startswith("2026-03"), filed
+
+
+def test_an_existing_account_gains_groups_for_markets_added_later(tmp_path):
+    """A market with no group profiles is unreachable, not merely unstyled.
+
+    The add-stock form builds its market list from the user's own groups, and
+    both that picker and the watchlist tabs hide themselves when only one
+    market is present. So an account provisioned before SGX existed could not
+    reach SGX at all. Migration 006 re-seeds; this guards the round trip.
+    """
+    import groups
+    import migrations
+
+    conn = db.connect(tmp_path / "late.db")
+    db.init_schema(conn)
+    user_id = seed_user(conn)
+
+    # An account as it looked before the SGX profiles were written.
+    groups.seed(conn, user_id=user_id, verbose=False)
+    conn.execute(
+        "DELETE FROM group_metrics WHERE group_id IN "
+        "(SELECT id FROM metric_groups WHERE user_id = ? AND market = 'SGX')",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM metric_groups WHERE user_id = ? AND market = 'SGX'", (user_id,)
+    )
+    # Something the user filed by hand, which re-seeding must not disturb.
+    conn.execute(
+        "INSERT OR IGNORE INTO tickers (ticker, market, first_seen_at) "
+        "VALUES ('AAPL', 'US', '2024-01-01')"
+    )
+    group_id = conn.execute(
+        "SELECT id FROM metric_groups WHERE user_id = ? AND name = 'Big Tech'",
+        (user_id,),
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT OR IGNORE INTO stock_groups (user_id, ticker, group_id) VALUES (?,?,?)",
+        (user_id, "AAPL", group_id),
+    )
+    conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+    conn.commit()
+
+    def offered():
+        return {
+            row["market"]
+            for row in conn.execute(
+                "SELECT DISTINCT market FROM metric_groups WHERE user_id = ?",
+                (user_id,),
+            )
+        }
+
+    assert offered() == {"US"}, "precondition: the account is US-only"
+
+    migrations.apply(conn)
+
+    assert "SGX" in offered()
+    seeded = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM metric_groups WHERE user_id = ? AND market = 'SGX'",
+            (user_id,),
+        )
+    }
+    assert {"REITs", "Banks", "Dividend", "Others"} <= seeded
+    # Profiles arrive with their metrics, not as empty shells.
+    assert conn.execute(
+        "SELECT 1 FROM group_metrics gm JOIN metric_groups g ON g.id = gm.group_id "
+        "WHERE g.user_id = ? AND g.market = 'SGX'",
+        (user_id,),
+    ).fetchone()
+    # The user's own filing survives.
+    assert conn.execute(
+        "SELECT 1 FROM stock_groups WHERE user_id = ? AND ticker = 'AAPL'", (user_id,)
+    ).fetchone()
+
+    # Safe to run twice: the seeder upserts on (user_id, name).
+    before = conn.execute(
+        "SELECT COUNT(*) c FROM metric_groups WHERE user_id = ?", (user_id,)
+    ).fetchone()["c"]
+    conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+    conn.commit()
+    migrations.apply(conn)
+    after = conn.execute(
+        "SELECT COUNT(*) c FROM metric_groups WHERE user_id = ?", (user_id,)
+    ).fetchone()["c"]
+    assert before == after

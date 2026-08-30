@@ -385,12 +385,41 @@ def _005_yield_and_group_markets(conn: sqlite3.Connection) -> None:
     # Everything seeded before this was for US listings.
     conn.execute("UPDATE metric_groups SET market = 'US' WHERE market IS NULL")
 
+
+# --- 006 --------------------------------------------------------------------
+
+
+def _006_seed_market_groups(conn: sqlite3.Connection) -> None:
+    """Give existing accounts the group profiles added since they signed up.
+
+    Groups are seeded once, at provisioning. Anyone who signed up before a
+    market existed therefore never receives its profiles, and 005 only stamped
+    the groups already present as 'US'.
+
+    That is not merely cosmetic. The add-stock form derives its market list
+    from the user's own groups, so an account holding only US profiles offers
+    only US, and both the market picker and the watchlist tabs hide themselves
+    as single-market. The result is a market that cannot be reached at all
+    through the UI.
+
+    Re-seeding is the fix and is safe to repeat: the seeder upserts on
+    (user_id, name), and only `reset=True` touches which stocks sit in which
+    group. Existing profiles keep their members.
+    """
+    # Deferred: db imports this module, and groups imports db.
+    import groups
+
+    for row in conn.execute("SELECT id FROM users ORDER BY id").fetchall():
+        groups.seed(conn, user_id=row["id"], verbose=False)
+
+
 MIGRATIONS: tuple[tuple[int, str, object], ...] = (
     (1, "multi_tenant", _001_multi_tenant),
     (2, "normalise", _002_normalise),
     (3, "funds", _003_funds),
     (4, "markets", _004_markets),
     (5, "yield_and_group_markets", _005_yield_and_group_markets),
+    (6, "seed_market_groups", _006_seed_market_groups),
 )
 
 

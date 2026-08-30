@@ -214,6 +214,7 @@ def seed(conn, user_id: int | None = None, reset: bool = False,
             INSERT INTO metric_groups (user_id, name, market, primary_multiple, description, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, name) DO UPDATE SET
+                market = excluded.market,
                 primary_multiple = excluded.primary_multiple,
                 description = excluded.description
             """,
