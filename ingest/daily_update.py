@@ -29,6 +29,7 @@ import alerts
 import backfill
 import db
 import derive
+import ibkr
 import jobs
 import prices
 import run_log
@@ -114,6 +115,24 @@ def main(job_id: int | None = None) -> int:
 
     # Fundamentals first. companyfacts is cached for a day, so this is close to
     # free most days and picks up new filings the moment they land.
+    # IBKR first, deliberately. A holding is the strongest signal that its
+    # filings are wanted, so discovering positions before the EDGAR pass means
+    # a stock bought yesterday gets its full valuation history in the same
+    # run rather than waiting a day for the next one.
+    jobs.set_step(conn, job_id, "Syncing brokerage holdings")
+    print("")
+    print("--- ibkr ---")
+    try:
+        _ibkr = ibkr.sync_all(conn, verbose=True)
+        print(f"{_ibkr['ok']} account(s) synced, {_ibkr['failed']} failed")
+        for _symbol in _ibkr['unmatched']:
+            if _symbol not in tickers:
+                print(f'  held but not in the registry: {_symbol} - ingesting')
+                tickers.append(_symbol)
+    except Exception as exc:  # noqa: BLE001 - brokerage data is not the main job
+        failures.append(f'ibkr: {type(exc).__name__}: {exc}')
+        print(f'ibkr sync FAILED - {exc}')
+
     jobs.set_step(conn, job_id, "Checking EDGAR for new filings")
     print("\n--- fundamentals ---")
     for ticker in tickers:

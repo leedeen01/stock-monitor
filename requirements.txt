@@ -7,3 +7,7 @@
 
 yfinance==1.5.2
 lxml==6.1.1
+
+# AES-256-GCM, so the scheduled job can read the IBKR token the web layer
+# encrypted. Without it, syncing only works when someone clicks a button.
+cryptography==46.0.4

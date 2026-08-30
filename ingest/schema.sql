@@ -337,3 +337,76 @@ CREATE TABLE IF NOT EXISTS ibkr_links (
     last_sync_status TEXT,
     last_sync_detail TEXT
 );
+
+-- IBKR holdings, one snapshot per user per report date.
+--
+-- Flex refreshes overnight, so this is a daily series rather than live. Keeping
+-- every snapshot rather than overwriting means position weight over time is
+-- available later without a second data source.
+CREATE TABLE IF NOT EXISTS holdings (
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    report_date      TEXT NOT NULL,
+    ticker           TEXT NOT NULL,
+    conid            TEXT,
+    asset_class      TEXT,
+    currency         TEXT,
+    quantity         REAL,
+    cost_basis_price REAL,
+    cost_basis_money REAL,
+    mark_price       REAL,
+    position_value   REAL,
+    unrealized_pnl   REAL,
+    percent_of_nav   REAL,
+    PRIMARY KEY (user_id, report_date, ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_latest
+    ON holdings (user_id, report_date DESC);
+
+-- Executions, keyed by IBKR's trade id so a re-run cannot double-count. Same
+-- reasoning as `fundamentals` being keyed by SEC accession.
+CREATE TABLE IF NOT EXISTS ibkr_trades (
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    trade_id     TEXT NOT NULL,
+    ticker       TEXT,
+    conid        TEXT,
+    asset_class  TEXT,
+    currency     TEXT,
+    trade_date   TEXT,
+    buy_sell     TEXT,
+    quantity     REAL,
+    price        REAL,
+    commission   REAL,
+    net_cash     REAL,
+    open_close   TEXT,
+    cost_basis   REAL,
+    realized_pnl REAL,
+    PRIMARY KEY (user_id, trade_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ibkr_trades_ticker
+    ON ibkr_trades (user_id, ticker, trade_date);
+
+-- Cash by currency, and the NAV split. Cash is what turns position values into
+-- real weights: without it, "40% of my equities" reads as "40% of my money".
+CREATE TABLE IF NOT EXISTS ibkr_cash (
+    user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    report_date          TEXT NOT NULL,
+    currency             TEXT NOT NULL,
+    starting_cash        REAL,
+    ending_cash          REAL,
+    dividends            REAL,
+    withholding_tax      REAL,
+    deposits_withdrawals REAL,
+    interest             REAL,
+    PRIMARY KEY (user_id, report_date, currency)
+);
+
+CREATE TABLE IF NOT EXISTS ibkr_nav (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    report_date TEXT NOT NULL,
+    cash        REAL,
+    stock       REAL,
+    total       REAL,
+    PRIMARY KEY (user_id, report_date)
+);
