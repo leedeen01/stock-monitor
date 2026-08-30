@@ -133,7 +133,7 @@ def main() -> None:
 
     tickers = [t.upper() for t in args.tickers] or [
         r["ticker"] for r in conn.execute(
-            "SELECT ticker FROM watchlist WHERE supported = 1 ORDER BY ticker"
+            "SELECT ticker FROM tickers WHERE supported = 1 ORDER BY ticker"
         )
     ]
 

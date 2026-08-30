@@ -21,33 +21,13 @@ import db
 import derive
 import jobs
 import prices
+import run_log
 import segments
-from config import DATA_DIR
-
-LOG_DIR = DATA_DIR / "logs"
 
 
-class _Tee:
-    def __init__(self, stream, handle):
-        self._stream, self._handle = stream, handle
-
-    def write(self, text: str) -> None:
-        self._stream.write(text)
-        self._handle.write(text)
-        self._handle.flush()
-
-    def flush(self) -> None:
-        self._stream.flush()
-        self._handle.flush()
 
 
-def _open_log():
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d")
-    return (LOG_DIR / f"add_{stamp}.log").open("a", encoding="utf-8")
-
-
-def add_ticker(conn, ticker: str, group_ids: list[int],
+def add_ticker(conn, ticker: str, group_ids: list[int], user_id: int,
                job_id: int | None = None) -> dict:
     ticker = ticker.upper()
 
@@ -55,7 +35,7 @@ def add_ticker(conn, ticker: str, group_ids: list[int],
     backfill.backfill_fundamentals(conn, ticker, verbose=True)
 
     row = conn.execute(
-        "SELECT supported, unsupported_reason FROM watchlist WHERE ticker = ?",
+        "SELECT supported, unsupported_reason FROM tickers WHERE ticker = ?",
         (ticker,),
     ).fetchone()
     if row is None:
@@ -78,16 +58,22 @@ def add_ticker(conn, ticker: str, group_ids: list[int],
     except Exception as exc:  # noqa: BLE001
         print(f"segments: skipped - {type(exc).__name__}: {exc}")
 
+    # The ingest registry now knows this ticker; put it on THIS user's list.
     jobs.set_step(conn, job_id, "Assigning groups")
+    conn.execute(
+        "INSERT OR IGNORE INTO watchlist (user_id, ticker, added_at) VALUES (?, ?, ?)",
+        (user_id, ticker, datetime.now().isoformat(timespec="seconds")),
+    )
     for gid in group_ids:
         conn.execute(
-            "INSERT OR IGNORE INTO stock_groups (ticker, group_id) VALUES (?, ?)",
-            (ticker, gid),
+            "INSERT OR IGNORE INTO stock_groups (ticker, group_id, user_id) "
+            "VALUES (?, ?, ?)",
+            (ticker, gid, user_id),
         )
     if group_ids:
         conn.execute(
-            "UPDATE watchlist SET default_group_id = ? WHERE ticker = ?",
-            (group_ids[0], ticker),
+            "UPDATE watchlist SET default_group_id = ? WHERE ticker = ? AND user_id = ?",
+            (group_ids[0], ticker, user_id),
         )
 
     # Price at the moment of adding, so the grid can show since-added return.
@@ -98,8 +84,8 @@ def add_ticker(conn, ticker: str, group_ids: list[int],
     if latest and latest["close"]:
         conn.execute(
             "UPDATE watchlist SET added_price = ? WHERE ticker = ? "
-            "AND added_price IS NULL",
-            (latest["close"], ticker),
+            "AND user_id = ? AND added_price IS NULL",
+            (latest["close"], ticker, user_id),
         )
     conn.commit()
 
@@ -120,6 +106,8 @@ def main() -> int:
     parser.add_argument("ticker")
     parser.add_argument("--groups", default="",
                         help="Comma-separated metric_groups ids")
+    parser.add_argument("--user-id", type=int, required=True,
+                        help="Whose watchlist this is added to")
     parser.add_argument("--job-id", type=int, default=None)
     args = parser.parse_args()
 
@@ -128,7 +116,7 @@ def main() -> int:
     conn = db.connect()
     db.init_schema(conn)
     try:
-        result = add_ticker(conn, args.ticker, group_ids, args.job_id)
+        result = add_ticker(conn, args.ticker, group_ids, args.user_id, args.job_id)
     except Exception as exc:  # noqa: BLE001 - the message is the UI's error text
         traceback.print_exc()
         # The message goes straight to the UI, so lead with what happened
@@ -151,7 +139,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    _log = _open_log()
-    sys.stdout = _Tee(sys.__stdout__, _log)
-    sys.stderr = _Tee(sys.__stderr__, _log)
+    run_log.tee_stdio("add")
     sys.exit(main())

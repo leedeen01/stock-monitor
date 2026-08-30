@@ -296,3 +296,44 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_active ON jobs (status, id DESC);
+
+-- Accounts.
+--
+-- Passwords are stored as scrypt hashes with a per-user salt, never plaintext
+-- and never reversibly encrypted. The format is scheme$salt$key so the scheme
+-- can change later without a migration guessing game.
+--
+-- `role` exists because the first account to register owns the instance, and
+-- per-user data ownership will need to distinguish them. Nothing enforces it
+-- beyond that yet.
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT NOT NULL,
+    email_lower   TEXT NOT NULL UNIQUE,   -- lookups are case-insensitive
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'member',
+    created_at    TEXT NOT NULL,
+    last_seen_at  TEXT
+);
+
+-- Each user's link to their own IBKR account.
+--
+-- One row per user: the Flex Web Service needs a query id and a token, and the
+-- token is a bearer credential that reads their brokerage statements. It is
+-- stored encrypted (AES-256-GCM) rather than plaintext, is never returned to
+-- the browser, and is never written to a log. Deleting the account takes the
+-- link with it.
+--
+-- Flex data refreshes once daily overnight, which is why last_sync_at is worth
+-- surfacing: a stale link should look stale rather than look like a portfolio
+-- that stopped moving.
+CREATE TABLE IF NOT EXISTS ibkr_links (
+    user_id          INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    flex_query_id    TEXT NOT NULL,
+    token_cipher     TEXT NOT NULL,
+    account_label    TEXT,
+    linked_at        TEXT NOT NULL,
+    last_sync_at     TEXT,
+    last_sync_status TEXT,
+    last_sync_detail TEXT
+);

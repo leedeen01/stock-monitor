@@ -105,26 +105,35 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def seed(conn, reset: bool = False, verbose: bool = True) -> None:
+def seed(conn, user_id: int | None = None, reset: bool = False,
+         verbose: bool = True) -> None:
+    """Create one user's metric profiles.
+
+    Groups are per-user because people add their own; the defaults here are
+    a starting point, not a fixed taxonomy. Passing user_id=None seeds the
+    ownerless rows an older single-user install left behind."""
     if reset:
-        conn.execute("DELETE FROM group_metrics")
-        conn.execute("DELETE FROM stock_groups")
-        conn.execute("DELETE FROM metric_groups")
+        conn.execute(
+            "DELETE FROM group_metrics WHERE group_id IN "
+            "(SELECT id FROM metric_groups WHERE user_id IS ?)", (user_id,))
+        conn.execute("DELETE FROM stock_groups WHERE user_id IS ?", (user_id,))
+        conn.execute("DELETE FROM metric_groups WHERE user_id IS ?", (user_id,))
         conn.commit()
 
     for spec in SEED_GROUPS:
         conn.execute(
             """
-            INSERT INTO metric_groups (name, primary_multiple, description, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
+            INSERT INTO metric_groups (user_id, name, primary_multiple, description, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, name) DO UPDATE SET
                 primary_multiple = excluded.primary_multiple,
                 description = excluded.description
             """,
-            (spec["name"], spec["primary_multiple"], spec["description"], _now()),
+            (user_id, spec["name"], spec["primary_multiple"], spec["description"], _now()),
         )
         group_id = conn.execute(
-            "SELECT id FROM metric_groups WHERE name = ?", (spec["name"],)
+            "SELECT id FROM metric_groups WHERE name = ? AND user_id IS ?",
+            (spec["name"], user_id)
         ).fetchone()["id"]
 
         conn.execute("DELETE FROM group_metrics WHERE group_id = ?", (group_id,))
@@ -143,19 +152,25 @@ def seed(conn, reset: bool = False, verbose: bool = True) -> None:
     # Membership, and a default group for tickers in more than one.
     for ticker, group_names in SEED_MEMBERSHIP.items():
         exists = conn.execute(
-            "SELECT 1 FROM watchlist WHERE ticker = ?", (ticker,)).fetchone()
+            "SELECT 1 FROM watchlist WHERE ticker = ? AND user_id IS ?",
+            (ticker, user_id)).fetchone()
         if not exists:
             continue
         for name in group_names:
-            row = conn.execute("SELECT id FROM metric_groups WHERE name = ?", (name,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM metric_groups WHERE name = ? AND user_id IS ?",
+                (name, user_id)).fetchone()
             conn.execute(
-                "INSERT OR IGNORE INTO stock_groups (ticker, group_id) VALUES (?, ?)",
-                (ticker, row["id"]),
+                "INSERT OR IGNORE INTO stock_groups (ticker, group_id, user_id) "
+                "VALUES (?, ?, ?)",
+                (ticker, row["id"], user_id),
             )
         default_id = conn.execute(
-            "SELECT id FROM metric_groups WHERE name = ?", (group_names[0],)).fetchone()["id"]
+            "SELECT id FROM metric_groups WHERE name = ? AND user_id IS ?",
+            (group_names[0], user_id)).fetchone()["id"]
         conn.execute(
-            "UPDATE watchlist SET default_group_id = ? WHERE ticker = ?", (default_id, ticker))
+            "UPDATE watchlist SET default_group_id = ? WHERE ticker = ? AND user_id IS ?",
+            (default_id, ticker, user_id))
 
     # Seeded tickers were added today, so the price on the latest derived day is
     # genuinely their add price. Only fills where unset — never overwrites a real
@@ -166,9 +181,9 @@ def seed(conn, reset: bool = False, verbose: bool = True) -> None:
             SELECT close FROM ratios_daily r
             WHERE r.ticker = watchlist.ticker ORDER BY r.date DESC LIMIT 1
         )
-        WHERE added_price IS NULL
+        WHERE added_price IS NULL AND user_id IS ?
           AND EXISTS (SELECT 1 FROM ratios_daily r WHERE r.ticker = watchlist.ticker)
-        """
+        """, (user_id,)
     )
     conn.commit()
 
@@ -187,11 +202,13 @@ def seed(conn, reset: bool = False, verbose: bool = True) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed metric groups")
     parser.add_argument("--reset", action="store_true", help="Wipe groups before seeding")
+    parser.add_argument("--user-id", type=int, default=None,
+                        help="Seed for this user; omit for ownerless rows")
     args = parser.parse_args()
 
     conn = db.connect()
     db.init_schema(conn)
-    seed(conn, reset=args.reset)
+    seed(conn, user_id=args.user_id, reset=args.reset)
 
     from pathlib import Path
     out = Path(__file__).resolve().parent.parent / "web" / "lib" / "metrics.json"

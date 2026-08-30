@@ -218,7 +218,7 @@ export type AlertRule = {
 };
 
 /** Unacknowledged crossings, newest first. */
-export function getOpenAlerts(limit = 50): AlertEvent[] {
+export function getOpenAlerts(userId: number, limit = 50): AlertEvent[] {
   return (
     db()
       .prepare(
@@ -226,11 +226,11 @@ export function getOpenAlerts(limit = 50): AlertEvent[] {
                 e.created_at, e.metric_key, e.value, e.percentile, e.detail
          FROM alert_events e
          JOIN alert_rules r ON r.id = e.rule_id
-         WHERE e.acknowledged = 0
+         WHERE e.acknowledged = 0 AND e.user_id = ?
          ORDER BY e.trigger_date DESC, e.id DESC
          LIMIT ?`,
       )
-      .all(limit) as Record<string, never>[]
+      .all(userId, limit) as Record<string, never>[]
   ).map((r: Record<string, unknown>) => ({
     id: r.id as number,
     ruleId: r.rule_id as number,
@@ -245,7 +245,7 @@ export function getOpenAlerts(limit = 50): AlertEvent[] {
   }));
 }
 
-export function getAlertRules(): AlertRule[] {
+export function getAlertRules(userId: number): AlertRule[] {
   const rows = db()
     .prepare(
       `SELECT r.*,
@@ -253,9 +253,9 @@ export function getAlertRules(): AlertRule[] {
                WHERE e.rule_id = r.id AND e.acknowledged = 0) AS open_count,
               (SELECT g.name FROM metric_groups g
                WHERE CAST(g.id AS TEXT) = r.scope_ref) AS group_name
-       FROM alert_rules r ORDER BY r.id`,
+       FROM alert_rules r WHERE r.user_id = ? ORDER BY r.id`,
     )
-    .all() as Record<string, unknown>[];
+    .all(userId) as Record<string, unknown>[];
 
   return rows.map((r) => ({
     id: r.id as number,
@@ -276,25 +276,26 @@ export function getAlertRules(): AlertRule[] {
   }));
 }
 
-export function getGroups(): GroupRef[] {
+export function getGroups(userId: number): GroupRef[] {
   return (
     db()
       .prepare(
-        `SELECT id, name, primary_multiple FROM metric_groups ORDER BY id`,
+        `SELECT id, name, primary_multiple FROM metric_groups
+          WHERE user_id = ? ORDER BY id`,
       )
-      .all() as { id: number; name: string; primary_multiple: string }[]
+      .all(userId) as { id: number; name: string; primary_multiple: string }[]
   ).map((g) => ({ id: g.id, name: g.name, primaryMultiple: g.primary_multiple }));
 }
 
-function groupsFor(ticker: string): GroupRef[] {
+function groupsFor(ticker: string, userId: number): GroupRef[] {
   return (
     db()
       .prepare(
         `SELECT g.id, g.name, g.primary_multiple
          FROM stock_groups sg JOIN metric_groups g ON g.id = sg.group_id
-         WHERE sg.ticker = ? ORDER BY g.id`,
+         WHERE sg.ticker = ? AND sg.user_id = ? ORDER BY g.id`,
       )
-      .all(ticker) as { id: number; name: string; primary_multiple: string }[]
+      .all(ticker, userId) as { id: number; name: string; primary_multiple: string }[]
   ).map((g) => ({ id: g.id, name: g.name, primaryMultiple: g.primary_multiple }));
 }
 
@@ -350,14 +351,17 @@ function computeFlags(ticker: string, primary: MetricStats | null): string[] {
   return flags;
 }
 
-export function getWatchlist(): WatchlistRow[] {
+export function getWatchlist(userId: number): WatchlistRow[] {
   const conn = db();
   const watchlist = conn
     .prepare(
-      `SELECT w.ticker, w.name, w.default_group_id
-       FROM watchlist w WHERE w.supported = 1 ORDER BY w.ticker`,
+      `SELECT w.ticker, t.name, w.default_group_id
+       FROM watchlist w
+       JOIN tickers t ON t.ticker = w.ticker
+       WHERE w.user_id = ? AND t.supported = 1
+       ORDER BY w.ticker`,
     )
-    .all() as {
+    .all(userId) as {
     ticker: string; name: string; default_group_id: number | null;
   }[];
 
@@ -376,7 +380,7 @@ export function getWatchlist(): WatchlistRow[] {
     if (!recent.length) continue;
 
     const [latest, previous] = recent;
-    const groups = groupsFor(w.ticker);
+    const groups = groupsFor(w.ticker, userId);
     const group =
       groups.find((g) => g.id === w.default_group_id) ?? groups[0] ?? null;
 
@@ -437,15 +441,18 @@ export type StockDetail = {
 
 export function getStockDetail(
   ticker: string,
+  userId: number,
   groupId?: number,
 ): StockDetail | null {
   const conn = db();
   const w = conn
     .prepare(
-      `SELECT ticker, name, default_group_id FROM watchlist
-       WHERE ticker = ? AND supported = 1`,
+      `SELECT w.ticker, t.name, w.default_group_id
+         FROM watchlist w
+         JOIN tickers t ON t.ticker = w.ticker
+        WHERE w.ticker = ? AND w.user_id = ? AND t.supported = 1`,
     )
-    .get(ticker) as
+    .get(ticker, userId) as
     | { ticker: string; name: string; default_group_id: number | null }
     | undefined;
   if (!w) return null;
@@ -469,7 +476,7 @@ export function getStockDetail(
     )
     .get(ticker, shiftYears(latest.date, 1)) as { lo: number; hi: number };
 
-  const groups = groupsFor(ticker);
+  const groups = groupsFor(ticker, userId);
   const activeGroup =
     groups.find((g) => g.id === groupId) ??
     groups.find((g) => g.id === w.default_group_id) ??

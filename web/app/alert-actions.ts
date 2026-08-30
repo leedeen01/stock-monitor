@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { refresh } from "next/cache";
 
 import { db } from "@/lib/db";
+import { requireAction } from "@/lib/guard";
 import { BY_KEY } from "@/lib/metrics";
 import { INGEST_DIR, PYTHON } from "@/lib/paths";
 
@@ -22,34 +23,43 @@ const PRIMARY = "__primary__";
 export type ActionResult = { ok: boolean; message: string };
 
 export async function acknowledgeAlert(id: number): Promise<ActionResult> {
+  const user = await requireAction();
+
   if (!Number.isInteger(id)) return { ok: false, message: "Invalid alert." };
-  db().prepare("UPDATE alert_events SET acknowledged = 1 WHERE id = ?").run(id);
+  db().prepare("UPDATE alert_events SET acknowledged = 1 WHERE id = ? AND user_id = ?")
+    .run(id, user.id);
   refresh();
   return { ok: true, message: "Dismissed." };
 }
 
 export async function acknowledgeAll(): Promise<ActionResult> {
+  const user = await requireAction();
+
   const info = db()
-    .prepare("UPDATE alert_events SET acknowledged = 1 WHERE acknowledged = 0")
-    .run();
+    .prepare("UPDATE alert_events SET acknowledged = 1 WHERE acknowledged = 0 AND user_id = ?")
+    .run(user.id);
   refresh();
   return { ok: true, message: `Dismissed ${info.changes} alert(s).` };
 }
 
 export async function toggleRule(id: number, enabled: boolean): Promise<ActionResult> {
+  const user = await requireAction();
+
   if (!Number.isInteger(id)) return { ok: false, message: "Invalid rule." };
   db()
-    .prepare("UPDATE alert_rules SET enabled = ? WHERE id = ?")
-    .run(enabled ? 1 : 0, id);
+    .prepare("UPDATE alert_rules SET enabled = ? WHERE id = ? AND user_id = ?")
+    .run(enabled ? 1 : 0, id, user.id);
   refresh();
   return { ok: true, message: enabled ? "Rule enabled." : "Rule paused." };
 }
 
 export async function deleteRule(id: number): Promise<ActionResult> {
+  const user = await requireAction();
+
   if (!Number.isInteger(id)) return { ok: false, message: "Invalid rule." };
   // Events cascade with the rule — keeping orphaned alerts whose rule no longer
   // exists would leave entries nothing can explain.
-  db().prepare("DELETE FROM alert_rules WHERE id = ?").run(id);
+  db().prepare("DELETE FROM alert_rules WHERE id = ? AND user_id = ?").run(id, user.id);
   refresh();
   return { ok: true, message: "Rule deleted." };
 }
@@ -58,6 +68,8 @@ export async function createRule(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const user = await requireAction();
+
   const name = String(formData.get("name") ?? "").trim();
   const scope = String(formData.get("scope") ?? "all");
   const scopeRefRaw = String(formData.get("scopeRef") ?? "").trim();
@@ -93,17 +105,18 @@ export async function createRule(
   }
 
   const conn = db();
-  if (conn.prepare("SELECT 1 FROM alert_rules WHERE name = ?").get(name)) {
+  if (conn.prepare("SELECT 1 FROM alert_rules WHERE name = ? AND user_id = ?").get(name, user.id)) {
     return { ok: false, message: `A rule called "${name}" already exists.` };
   }
 
   conn
     .prepare(
       `INSERT INTO alert_rules
-         (name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+         (user_id, name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .run(
+      user.id,
       name,
       scope,
       scope === "all" ? null : scope === "ticker" ? scopeRefRaw.toUpperCase() : scopeRefRaw,
@@ -125,6 +138,8 @@ export async function createRule(
  * resurrect alerts you already dismissed.
  */
 export async function evaluateNow(): Promise<ActionResult> {
+  await requireAction();
+
   try {
     const { stdout } = await run(PYTHON, ["alerts.py"], {
       cwd: INGEST_DIR,

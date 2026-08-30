@@ -17,7 +17,7 @@ def main() -> None:
                (SELECT COUNT(*) FROM ratios_daily r WHERE r.ticker = w.ticker) AS ratios,
                (SELECT MIN(period_end) FROM fundamentals f WHERE f.ticker = w.ticker) AS first,
                (SELECT MAX(period_end) FROM fundamentals f WHERE f.ticker = w.ticker) AS last
-        FROM watchlist w
+        FROM tickers w
         ORDER BY w.supported DESC, w.ticker
         """
     ).fetchall()

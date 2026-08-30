@@ -3,6 +3,7 @@ import Link from "next/link";
 import { AddStockForm } from "@/components/AddStockForm";
 import { AlertBanner } from "@/components/AlertBanner";
 import { AuthNav } from "@/components/AuthNav";
+import { requirePage } from "@/lib/guard";
 import { RefreshButton } from "@/components/RefreshButton";
 import { WatchlistGrid } from "@/components/WatchlistGrid";
 import {
@@ -15,11 +16,13 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default function Home() {
-  const rows = getWatchlist();
-  const groups = getGroups();
+export default async function Home() {
+  const user = await requirePage("/");
+
+  const rows = getWatchlist(user.id);
+  const groups = getGroups(user.id);
   const pipeline = getPipelineStatus();
-  const alerts = getOpenAlerts();
+  const alerts = getOpenAlerts(user.id);
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">

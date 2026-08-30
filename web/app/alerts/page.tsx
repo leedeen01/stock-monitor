@@ -1,15 +1,18 @@
 import Link from "next/link";
 
 import { RuleManager } from "@/components/RuleManager";
+import { requirePage } from "@/lib/guard";
 import { getAlertRules, getGroups, getOpenAlerts, getWatchlist } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export default function AlertsPage() {
-  const rules = getAlertRules();
-  const groups = getGroups();
-  const tickers = getWatchlist();
-  const open = getOpenAlerts(100);
+export default async function AlertsPage() {
+  const user = await requirePage("/alerts");
+
+  const rules = getAlertRules(user.id);
+  const groups = getGroups(user.id);
+  const tickers = getWatchlist(user.id);
+  const open = getOpenAlerts(user.id, 100);
 
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">

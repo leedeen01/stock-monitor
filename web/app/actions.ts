@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { refresh } from "next/cache";
 
 import { db } from "@/lib/db";
+import { requireAction } from "@/lib/guard";
 import { INGEST_DIR, PYTHON } from "@/lib/paths";
 
 /**
@@ -77,6 +78,8 @@ export async function addStock(
   _prev: StartResult | null,
   formData: FormData,
 ): Promise<StartResult> {
+  const user = await requireAction();
+
   const ticker = String(formData.get("ticker") ?? "")
     .trim()
     .toUpperCase();
@@ -96,10 +99,10 @@ export async function addStock(
   expireStaleJobs();
 
   const already = conn
-    .prepare("SELECT ticker FROM watchlist WHERE ticker = ?")
-    .get(ticker);
+    .prepare("SELECT ticker FROM watchlist WHERE ticker = ? AND user_id = ?")
+    .get(ticker, user.id);
   if (already) {
-    return { ok: false, message: `${ticker} is already on the watchlist.` };
+    return { ok: false, message: `${ticker} is already on your watchlist.` };
   }
 
   const inFlight = conn
@@ -113,7 +116,7 @@ export async function addStock(
 
   const jobId = startJob(
     "add_ticker.py",
-    [ticker, "--groups", groupIds.join(",")],
+    [ticker, "--groups", groupIds.join(","), "--user-id", String(user.id)],
     "add",
     ticker,
     `Starting ${ticker}`,
@@ -123,6 +126,8 @@ export async function addStock(
 }
 
 export async function refreshNow(): Promise<StartResult> {
+  await requireAction();
+
   const conn = db();
   expireStaleJobs();
 
@@ -170,6 +175,8 @@ export type RemoveStockResult = {
  * Stays synchronous: it is two DELETEs, not a pipeline.
  */
 export async function removeStock(ticker: string): Promise<RemoveStockResult> {
+  const user = await requireAction();
+
   const symbol = ticker.trim().toUpperCase();
   if (!/^[A-Z][A-Z.\-]{0,9}$/.test(symbol)) {
     return { ok: false, message: "Invalid ticker." };
@@ -177,15 +184,17 @@ export async function removeStock(ticker: string): Promise<RemoveStockResult> {
 
   const conn = db();
   const existing = conn
-    .prepare("SELECT ticker FROM watchlist WHERE ticker = ?")
-    .get(symbol) as { ticker: string } | undefined;
+    .prepare("SELECT ticker FROM watchlist WHERE ticker = ? AND user_id = ?")
+    .get(symbol, user.id) as { ticker: string } | undefined;
   if (!existing) {
-    return { ok: false, message: `${symbol} is not on the watchlist.` };
+    return { ok: false, message: `${symbol} is not on your watchlist.` };
   }
 
   const tx = conn.transaction(() => {
-    conn.prepare("DELETE FROM stock_groups WHERE ticker = ?").run(symbol);
-    conn.prepare("DELETE FROM watchlist WHERE ticker = ?").run(symbol);
+    conn.prepare("DELETE FROM stock_groups WHERE ticker = ? AND user_id = ?")
+      .run(symbol, user.id);
+    conn.prepare("DELETE FROM watchlist WHERE ticker = ? AND user_id = ?")
+      .run(symbol, user.id);
   });
   tx();
 

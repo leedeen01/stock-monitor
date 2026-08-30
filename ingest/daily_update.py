@@ -31,37 +31,10 @@ import db
 import derive
 import jobs
 import prices
+import run_log
 import segments
-from config import DATA_DIR
-
-LOG_DIR = DATA_DIR / "logs"
-LOG_RETENTION_DAYS = 60
 
 
-class _Tee:
-    """Write to console and log file at once, so a manual run looks normal and
-    a scheduled run still leaves a record."""
-
-    def __init__(self, stream, handle):
-        self._stream = stream
-        self._handle = handle
-
-    def write(self, text: str) -> None:
-        self._stream.write(text)
-        self._handle.write(text)
-        self._handle.flush()
-
-    def flush(self) -> None:
-        self._stream.flush()
-        self._handle.flush()
-
-
-def _open_log():
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    for old in sorted(LOG_DIR.glob("daily_*.log"))[:-LOG_RETENTION_DAYS]:
-        old.unlink(missing_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d")
-    return (LOG_DIR / f"daily_{stamp}.log").open("a", encoding="utf-8")
 
 
 def _now() -> str:
@@ -86,7 +59,7 @@ def _supported_tickers(conn) -> list[str]:
     return [
         r["ticker"]
         for r in conn.execute(
-            "SELECT ticker FROM watchlist WHERE supported = 1 ORDER BY ticker"
+            "SELECT ticker FROM tickers WHERE supported = 1 ORDER BY ticker"
         )
     ]
 
@@ -245,9 +218,7 @@ if __name__ == "__main__":
     _parser = argparse.ArgumentParser(description="Daily refresh")
     _parser.add_argument("--job-id", type=int, default=None)
     _ARGS = _parser.parse_args()
-    _log = _open_log()
-    sys.stdout = _Tee(sys.__stdout__, _log)
-    sys.stderr = _Tee(sys.__stderr__, _log)
+    run_log.tee_stdio("daily")
     try:
         sys.exit(main(_ARGS.job_id))
     except Exception:

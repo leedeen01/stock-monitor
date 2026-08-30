@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/db";
+import { requireApi } from "@/lib/guard";
 
 /**
  * Job progress, polled by the buttons that start long work.
@@ -27,6 +28,12 @@ const COLUMNS =
   "id, kind, target, status, step, detail, started_at, finished_at";
 
 export async function GET(request: Request) {
+  // A route handler is reachable without ever loading a page, so it carries
+  // its own check. 401 rather than a redirect: this is fetched by script.
+  if (!(await requireApi())) {
+    return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  }
+
   const conn = db();
   const id = new URL(request.url).searchParams.get("id");
 

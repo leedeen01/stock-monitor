@@ -31,9 +31,12 @@ services:
       # User-Agent, and the failure looks like a network problem.
       SEC_CONTACT: ${SEC_CONTACT:?set SEC_CONTACT in .env}
       DAILY_CRON: ${DAILY_CRON:-0 6 * * *}
-      # Unset means login is disabled and the private pages stay shut.
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      # The whole app requires sign-in. Unset AUTH_SECRET means nobody can
+      # sign in and every page redirects to /login - it fails closed.
       AUTH_SECRET: ${AUTH_SECRET:-}
+      SIGNUP_INVITE_CODE: ${SIGNUP_INVITE_CODE:-}
+      SIGNUP_OPEN: ${SIGNUP_OPEN:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       # Everything stateful lives here: stocks.db, the EDGAR cache, run logs.
       # Must exist and be writable before first start.

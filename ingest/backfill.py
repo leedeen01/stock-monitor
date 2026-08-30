@@ -45,10 +45,15 @@ def store_fundamentals(conn: sqlite3.Connection, ticker: str, rows: list[dict]) 
     return len(rows)
 
 
-def ensure_watchlisted(conn: sqlite3.Connection, ticker: str, name: str, cik: int) -> None:
+def ensure_ticker(conn: sqlite3.Connection, ticker: str, name: str, cik: int) -> None:
+    """Record the ticker in the global ingest registry.
+
+    Deliberately not a watchlist entry: the registry is what the pipeline
+    fetches for, and it is shared. Whether any particular person follows this
+    ticker is a separate, per-user question."""
     conn.execute(
         """
-        INSERT INTO watchlist (ticker, name, cik, added_at)
+        INSERT INTO tickers (ticker, name, cik, first_seen_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(ticker) DO UPDATE SET name = excluded.name, cik = excluded.cik
         """,
@@ -68,7 +73,7 @@ def log_ingest(conn: sqlite3.Connection, ticker: str, source: str, status: str, 
 def backfill_fundamentals(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -> dict:
     ticker = ticker.upper()
     meta = edgar.resolve_ticker(ticker)
-    ensure_watchlisted(conn, ticker, meta["name"], meta["cik"])
+    ensure_ticker(conn, ticker, meta["name"], meta["cik"])
 
     # A reincorporated company's filings are split across CIKs; merge them.
     rows: list[dict] = []
@@ -113,7 +118,7 @@ def backfill_fundamentals(conn: sqlite3.Connection, ticker: str, verbose: bool =
 
     conn.execute(
         """
-        UPDATE watchlist
+        UPDATE tickers
         SET reporting_currency = ?, supported = ?, unsupported_reason = ?
         WHERE ticker = ?
         """,

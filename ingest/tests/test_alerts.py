@@ -13,6 +13,7 @@ import pytest
 
 import alerts
 import db
+from conftest import seed_user
 
 
 def _synthetic(tmp_path, values: list[float], column: str = "fcf_conversion"):
@@ -24,8 +25,12 @@ def _synthetic(tmp_path, values: list[float], column: str = "fcf_conversion"):
     """
     conn = db.connect(tmp_path / "alerts.db")
     db.init_schema(conn)
+    seed_user(conn)
     conn.execute(
-        "INSERT INTO watchlist (ticker, name, added_at, supported) VALUES ('TEST', 'Test Co', '2020-01-01', 1)"
+        "INSERT INTO tickers (ticker, name, supported) VALUES ('TEST', 'Test Co', 1)"
+    )
+    conn.execute(
+        "INSERT INTO watchlist (user_id, ticker, added_at) VALUES (1, 'TEST', '2020-01-01')"
     )
     conn.commit()
 
@@ -49,8 +54,8 @@ def _insert_day(conn, day: str, value: float, column: str = "fcf_conversion", fi
 def _add_rule(conn, condition: str, threshold: float, metric_key: str = "fcf_conversion"):
     conn.execute(
         """
-        INSERT INTO alert_rules (name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
-        VALUES ('test rule', 'all', NULL, ?, ?, ?, 1, '2024-01-01')
+        INSERT INTO alert_rules (user_id, name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
+        VALUES (1, 'test rule', 'all', NULL, ?, ?, ?, 1, '2024-01-01')
         """,
         (metric_key, condition, threshold),
     )
@@ -133,13 +138,17 @@ def test_a_newly_added_ticker_reports_conditions_already_true(tmp_path):
     """Same reasoning for a stock added to an existing rule's scope."""
     conn = db.connect(tmp_path / "newticker.db")
     db.init_schema(conn)
+    seed_user(conn)
     conn.execute(
-        "INSERT INTO watchlist (ticker, name, added_at, supported) VALUES ('OLD', 'Old', '2024-01-01', 1)"
+        "INSERT INTO tickers (ticker, name, supported) VALUES ('OLD', 'Old', 1)"
+    )
+    conn.execute(
+        "INSERT INTO watchlist (user_id, ticker, added_at) VALUES (1, 'OLD', '2024-01-01')"
     )
     conn.execute(
         """
-        INSERT INTO alert_rules (name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
-        VALUES ('r', 'all', NULL, 'fcf_conversion', 'value_below', 0.8, 1, '2024-01-01')
+        INSERT INTO alert_rules (user_id, name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
+        VALUES (1, 'r', 'all', NULL, 'fcf_conversion', 'value_below', 0.8, 1, '2024-01-01')
         """
     )
     conn.execute(
@@ -151,7 +160,10 @@ def test_a_newly_added_ticker_reports_conditions_already_true(tmp_path):
 
     # A new ticker joins, already below the threshold.
     conn.execute(
-        "INSERT INTO watchlist (ticker, name, added_at, supported) VALUES ('NEW', 'New', '2024-02-01', 1)"
+        "INSERT INTO tickers (ticker, name, supported) VALUES ('NEW', 'New', 1)"
+    )
+    conn.execute(
+        "INSERT INTO watchlist (user_id, ticker, added_at) VALUES (1, 'NEW', '2024-02-01')"
     )
     conn.execute(
         "INSERT INTO ratios_daily (ticker, date, close, fcf_conversion) VALUES ('NEW', '2024-01-01', 10, 0.3)"
@@ -268,20 +280,23 @@ def test_percentile_rules_need_enough_history(tmp_path):
 def test_group_scope_limits_which_tickers_are_checked(tmp_path):
     conn = db.connect(tmp_path / "scope.db")
     db.init_schema(conn)
+    seed_user(conn)
     conn.executescript(
         """
-        INSERT INTO watchlist (ticker, name, added_at, supported) VALUES
-            ('AAA', 'A', '2024-01-01', 1), ('BBB', 'B', '2024-01-01', 1);
-        INSERT INTO metric_groups (name, primary_multiple, created_at)
-            VALUES ('OnlyA', 'pe_ttm', '2024-01-01');
+        INSERT INTO tickers (ticker, name, supported) VALUES
+            ('AAA', 'A', 1), ('BBB', 'B', 1);
+        INSERT INTO watchlist (user_id, ticker, added_at) VALUES
+            (1, 'AAA', '2024-01-01'), (1, 'BBB', '2024-01-01');
+        INSERT INTO metric_groups (user_id, name, primary_multiple, created_at)
+            VALUES (1, 'OnlyA', 'pe_ttm', '2024-01-01');
         """
     )
     gid = conn.execute("SELECT id FROM metric_groups WHERE name='OnlyA'").fetchone()["id"]
-    conn.execute("INSERT INTO stock_groups (ticker, group_id) VALUES ('AAA', ?)", (gid,))
+    conn.execute("INSERT INTO stock_groups (user_id, ticker, group_id) VALUES (1, 'AAA', ?)", (gid,))
     conn.execute(
         """
-        INSERT INTO alert_rules (name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
-        VALUES ('grouped', 'group', ?, 'fcf_conversion', 'value_below', 0.8, 1, '2024-01-01')
+        INSERT INTO alert_rules (user_id, name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
+        VALUES (1, 'grouped', 'group', ?, 'fcf_conversion', 'value_below', 0.8, 1, '2024-01-01')
         """,
         (str(gid),),
     )

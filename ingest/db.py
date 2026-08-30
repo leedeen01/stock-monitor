@@ -3,6 +3,7 @@
 import sqlite3
 from pathlib import Path
 
+import migrations
 from config import DB_PATH
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -29,10 +30,16 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
+def init_schema(conn: sqlite3.Connection, verbose: bool = False) -> None:
+    """Create anything missing, then run versioned migrations.
+
+    Idempotent, and run on every container start — that is how a release
+    needing a new table reaches a database that already exists.
+    """
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _apply_migrations(conn)
     conn.commit()
+    migrations.apply(conn, verbose=verbose)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -44,7 +51,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
 
 def main() -> None:
     conn = connect()
-    init_schema(conn)
+    init_schema(conn, verbose=True)
     tables = [
         r["name"]
         for r in conn.execute(

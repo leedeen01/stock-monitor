@@ -14,15 +14,19 @@ import {
 import { SECTIONS, SECTION_ORDER, metric } from "@/lib/metrics";
 import { getSegments, getStockDetail } from "@/lib/queries";
 
+import { requirePage } from "@/lib/guard";
+
 export const dynamic = "force-dynamic";
 
 export default async function StockPage(props: PageProps<"/stock/[ticker]">) {
   const { ticker } = await props.params;
+  const user = await requirePage(`/stock/${ticker}`);
   const search = await props.searchParams;
   const groupParam = Number(search.group);
 
   const detail = getStockDetail(
     ticker.toUpperCase(),
+    user.id,
     Number.isInteger(groupParam) ? groupParam : undefined,
   );
   if (!detail) notFound();

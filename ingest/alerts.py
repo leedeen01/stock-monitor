@@ -58,8 +58,13 @@ def _shift_years(day: str, years: int) -> str:
 
 # --- metric access --------------------------------------------------------
 
-def resolve_metric(conn: sqlite3.Connection, ticker: str, metric_key: str) -> str | None:
-    """Turn '__primary__' into the ticker's group-specific leading multiple."""
+def resolve_metric(conn: sqlite3.Connection, ticker: str, metric_key: str,
+                   user_id: int | None = None) -> str | None:
+    """Turn '__primary__' into the ticker's group-specific leading multiple.
+
+    Which multiple leads depends on the group the OWNER put the ticker in, so
+    this is scoped to the rule's user rather than being a property of the
+    ticker itself."""
     if metric_key != PRIMARY:
         return metric_key if metric_key in metrics.BY_KEY else None
 
@@ -68,9 +73,9 @@ def resolve_metric(conn: sqlite3.Connection, ticker: str, metric_key: str) -> st
         SELECT g.primary_multiple AS m
         FROM watchlist w
         LEFT JOIN metric_groups g ON g.id = w.default_group_id
-        WHERE w.ticker = ?
+        WHERE w.ticker = ? AND w.user_id IS ?
         """,
-        (ticker,),
+        (ticker, user_id),
     ).fetchone()
     if row and row["m"] in metrics.BY_KEY:
         return row["m"]
@@ -135,7 +140,7 @@ def _holds(
     Returns (holds, value, percentile) so the event can record what tripped it.
     `new_filing` is handled separately — it detects change, not a threshold.
     """
-    column = resolve_metric(conn, ticker, rule["metric_key"])
+    column = resolve_metric(conn, ticker, rule["metric_key"], rule["user_id"])
     if column is None:
         return False, None, None
 
@@ -194,7 +199,7 @@ def tickers_in_scope(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[str]:
             for r in conn.execute(
                 """
                 SELECT sg.ticker FROM stock_groups sg
-                JOIN watchlist w ON w.ticker = sg.ticker AND w.supported = 1
+                JOIN tickers t ON t.ticker = sg.ticker AND t.supported = 1
                 WHERE sg.group_id = ? ORDER BY sg.ticker
                 """,
                 (rule["scope_ref"],),
@@ -203,7 +208,7 @@ def tickers_in_scope(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[str]:
     return [
         r["ticker"]
         for r in conn.execute(
-            "SELECT ticker FROM watchlist WHERE supported = 1 ORDER BY ticker"
+            "SELECT ticker FROM tickers WHERE supported = 1 ORDER BY ticker"
         )
     ]
 
@@ -251,7 +256,7 @@ def evaluate_rule(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[dict]:
                 "rule_id": rule["id"],
                 "ticker": ticker,
                 "trigger_date": latest,
-                "metric_key": resolve_metric(conn, ticker, rule["metric_key"]),
+                "metric_key": resolve_metric(conn, ticker, rule["metric_key"], rule["user_id"]),
                 "value": value,
                 "percentile": pct,
                 "detail": _describe(conn, rule, ticker, value, pct),
@@ -265,7 +270,7 @@ def _describe(conn, rule, ticker: str, value: float | None, pct: float | None) -
     if rule["condition"] == "new_filing":
         return f"{ticker} filed new financials"
 
-    column = resolve_metric(conn, ticker, rule["metric_key"])
+    column = resolve_metric(conn, ticker, rule["metric_key"], rule["user_id"])
     spec = metrics.BY_KEY.get(column)
     label = spec.label if spec else column
     shown = _format(value, spec.fmt) if spec else f"{value:.2f}"

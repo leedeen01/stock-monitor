@@ -23,7 +23,7 @@ def main() -> None:
         print(f"{r['ticker']:<8}{r['periods']:>8}{r['rows']:>7}{r['lo']:>13}{r['hi']:>13}  {shown}")
 
     missing = [r["ticker"] for r in conn.execute("""
-        SELECT ticker FROM watchlist w WHERE supported = 1
+        SELECT ticker FROM tickers w WHERE supported = 1
           AND NOT EXISTS (SELECT 1 FROM segment_revenue s WHERE s.ticker = w.ticker)
         ORDER BY ticker
     """)]
