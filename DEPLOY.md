@@ -164,7 +164,14 @@ TUNNEL_TOKEN=<the token from step 4>
 DATA_DIR=/volume1/docker/stock-monitor/data
 TZ=Asia/Singapore
 DAILY_CRON=0 6 * * *
+AUTH_PASSWORD=<pick one>
+AUTH_SECRET=<openssl rand -hex 32>
 ```
+
+`AUTH_*` gates the private views only — the watchlist, alerts and deep dives
+stay public. Leave them unset and login is disabled and `/portfolio` stays
+shut: it fails closed rather than open. Changing `AUTH_SECRET` signs out every
+existing session, which is also how you revoke one.
 
 ### Package visibility — already handled
 

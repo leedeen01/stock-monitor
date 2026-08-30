@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { AddStockForm } from "@/components/AddStockForm";
 import { AlertBanner } from "@/components/AlertBanner";
+import { AuthNav } from "@/components/AuthNav";
 import { RefreshButton } from "@/components/RefreshButton";
 import { WatchlistGrid } from "@/components/WatchlistGrid";
 import {
@@ -41,6 +42,7 @@ export default function Home() {
           </Link>
           <RefreshButton />
           <AddStockForm groups={groups} />
+          <AuthNav />
         </div>
       </header>
 

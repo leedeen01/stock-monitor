@@ -31,6 +31,9 @@ services:
       # User-Agent, and the failure looks like a network problem.
       SEC_CONTACT: ${SEC_CONTACT:?set SEC_CONTACT in .env}
       DAILY_CRON: ${DAILY_CRON:-0 6 * * *}
+      # Unset means login is disabled and the private pages stay shut.
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
     volumes:
       # Everything stateful lives here: stocks.db, the EDGAR cache, run logs.
       # Must exist and be writable before first start.
