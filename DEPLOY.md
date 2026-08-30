@@ -223,11 +223,31 @@ build — under a minute instead of several.
 publishes the image; the NAS picks it up on its next check. `data/` is never
 touched by an update — that is the entire point of the bind mount.
 
-To take an update immediately:
+To take an update immediately, run `scripts/update.sh`, or set up the alias
+below and just type `stockup`:
+
+```bash
+/volume1/docker/stock-monitor/src/scripts/update.sh
+```
+
+It pulls, restarts, waits for the container to report healthy, and prints any
+migrations that ran on the way up — which is the part worth reading after a
+manual update. The equivalent by hand is:
 
 ```bash
 cd /volume1/docker/stock-monitor/src && docker compose pull && docker compose up -d
 ```
+
+### The `stockup` alias
+
+Run once over SSH:
+
+```bash
+echo "alias stockup='/volume1/docker/stock-monitor/src/scripts/update.sh'" >> ~/.bashrc && . ~/.bashrc
+```
+
+`update.sh` arrives with the source tarball, so a first run may need
+`chmod +x` after a manual copy.
 
 To take it automatically, register `scripts/autoupdate.sh` as an hourly task
 under **Control Panel → Task Scheduler**. It compares image IDs and only
