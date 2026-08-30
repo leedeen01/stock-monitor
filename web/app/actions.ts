@@ -1,11 +1,10 @@
 "use server";
 
-import { spawn } from "node:child_process";
 import { refresh } from "next/cache";
 
 import { db } from "@/lib/db";
 import { requireAction } from "@/lib/guard";
-import { INGEST_DIR, PYTHON } from "@/lib/paths";
+import { expireStaleJobs, jobRunning, startJob, STALE_JOB_MINUTES } from "@/lib/jobs";
 
 /**
  * Long work runs detached, not awaited.
@@ -26,53 +25,6 @@ export type StartResult = {
   jobId?: number;
   message: string;
 };
-
-/** A job still 'running' after this lost its process; see ingest/jobs.py. */
-const STALE_JOB_MINUTES = 45;
-
-function expireStaleJobs() {
-  const cutoff = new Date(Date.now() - STALE_JOB_MINUTES * 60_000).toISOString();
-  db()
-    .prepare(
-      `UPDATE jobs
-          SET status = 'error', finished_at = ?, step = NULL,
-              detail = COALESCE(detail, 'process vanished before reporting a result')
-        WHERE status = 'running' AND started_at < ?`,
-    )
-    .run(new Date().toISOString(), cutoff);
-}
-
-/**
- * Insert the job row, then spawn. That order is deliberate — if Python created
- * the row, the first poll would land before it existed and the UI would decide
- * nothing was running.
- */
-function startJob(
-  script: string,
-  args: string[],
-  kind: "refresh" | "add",
-  target: string | null,
-  firstStep: string,
-): number {
-  const info = db()
-    .prepare(
-      "INSERT INTO jobs (kind, target, status, step, started_at) VALUES (?, ?, 'running', ?, ?)",
-    )
-    .run(kind, target, firstStep, new Date().toISOString());
-
-  const jobId = Number(info.lastInsertRowid);
-
-  const child = spawn(PYTHON, [script, ...args, "--job-id", String(jobId)], {
-    cwd: INGEST_DIR,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  // Let it outlive this request.
-  child.unref();
-
-  return jobId;
-}
 
 export async function addStock(
   _prev: StartResult | null,
@@ -105,22 +57,17 @@ export async function addStock(
     return { ok: false, message: `${ticker} is already on your watchlist.` };
   }
 
-  const inFlight = conn
-    .prepare(
-      "SELECT id FROM jobs WHERE kind = 'add' AND target = ? AND status = 'running'",
-    )
-    .get(ticker);
-  if (inFlight) {
+  if (jobRunning("add", ticker)) {
     return { ok: false, message: `${ticker} is already being added.` };
   }
 
-  const jobId = startJob(
-    "add_ticker.py",
-    [ticker, "--groups", groupIds.join(","), "--user-id", String(user.id)],
-    "add",
-    ticker,
-    `Starting ${ticker}`,
-  );
+  const jobId = startJob({
+    script: "add_ticker.py",
+    args: [ticker, "--groups", groupIds.join(","), "--user-id", String(user.id)],
+    kind: "add",
+    target: ticker,
+    firstStep: `Starting ${ticker}`,
+  });
 
   return { ok: true, jobId, message: `Adding ${ticker}…` };
 }
@@ -131,10 +78,7 @@ export async function refreshNow(): Promise<StartResult> {
   const conn = db();
   expireStaleJobs();
 
-  const jobRunning = conn
-    .prepare("SELECT id FROM jobs WHERE kind = 'refresh' AND status = 'running'")
-    .get();
-  if (jobRunning) {
+  if (jobRunning("refresh")) {
     return { ok: false, message: "A refresh is already running." };
   }
 
@@ -155,7 +99,12 @@ export async function refreshNow(): Promise<StartResult> {
     }
   }
 
-  const jobId = startJob("daily_update.py", [], "refresh", null, "Starting");
+  const jobId = startJob({
+    script: "daily_update.py",
+    args: [],
+    kind: "refresh",
+    firstStep: "Starting",
+  });
   return { ok: true, jobId, message: "Refresh started." };
 }
 

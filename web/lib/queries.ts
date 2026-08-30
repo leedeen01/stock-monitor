@@ -651,3 +651,155 @@ export function getSegments(ticker: string): SegmentBreakdown | null {
 
   return { periods, lines: current, total, latestPeriod, filedAt };
 }
+
+// --- holdings ---------------------------------------------------------------
+
+export type Holding = {
+  ticker: string;
+  name: string | null;
+  quantity: number | null;
+  costBasisPrice: number | null;
+  costBasisMoney: number | null;
+  markPrice: number | null;
+  positionValue: number | null;
+  unrealizedPnl: number | null;
+  percentOfNav: number | null;
+  /** Return since purchase, from real cost basis rather than a recorded add price. */
+  returnPct: number | null;
+  /** Valuation context from our own history — null when we hold it but never ingested it. */
+  multiple: number | null;
+  multipleLabel: string | null;
+  percentile: number | null;
+  revenueGrowth: number | null;
+  onWatchlist: boolean;
+};
+
+export type PortfolioSummary = {
+  reportDate: string | null;
+  positions: number;
+  stockValue: number;
+  cash: number | null;
+  total: number | null;
+  cashPct: number | null;
+  totalCost: number;
+  unrealizedPnl: number;
+  /**
+   * Position-weighted valuation percentile.
+   *
+   * The single number this app was built to produce, applied to a real book:
+   * how expensive is what you actually own, against each holding's own
+   * history. Weighted by position value, so a 12% holding at the 95th
+   * percentile counts for more than a 1% one.
+   */
+  weightedPercentile: number | null;
+  weightedCoverage: number;
+};
+
+export function getHoldings(userId: number): Holding[] {
+  const conn = db();
+  const latest = conn
+    .prepare("SELECT MAX(report_date) AS d FROM holdings WHERE user_id = ?")
+    .get(userId) as { d: string | null };
+  if (!latest?.d) return [];
+
+  const rows = conn
+    .prepare(
+      `SELECT h.ticker, t.name, h.quantity, h.cost_basis_price, h.cost_basis_money,
+              h.mark_price, h.position_value, h.unrealized_pnl, h.percent_of_nav,
+              w.ticker IS NOT NULL AS on_watchlist,
+              g.primary_multiple AS primary_key
+         FROM holdings h
+         LEFT JOIN tickers t ON t.ticker = h.ticker
+         LEFT JOIN watchlist w ON w.ticker = h.ticker AND w.user_id = h.user_id
+         LEFT JOIN metric_groups g ON g.id = w.default_group_id
+        WHERE h.user_id = ? AND h.report_date = ?
+        ORDER BY h.position_value DESC`,
+    )
+    .all(userId, latest.d) as Record<string, never>[];
+
+  return rows.map((r) => {
+    const row = r as unknown as {
+      ticker: string; name: string | null; quantity: number | null;
+      cost_basis_price: number | null; cost_basis_money: number | null;
+      mark_price: number | null; position_value: number | null;
+      unrealized_pnl: number | null; percent_of_nav: number | null;
+      on_watchlist: number; primary_key: string | null;
+    };
+
+    // Fall back to P/E when the holding is on no watchlist and so has no group
+    // telling us which multiple leads.
+    const key = row.primary_key ?? "pe_ttm";
+    const stats = metricStats(row.ticker, key);
+
+    const growth = conn
+      .prepare(
+        "SELECT revenue_growth_yoy AS g FROM ratios_daily WHERE ticker = ? " +
+          "ORDER BY date DESC LIMIT 1",
+      )
+      .get(row.ticker) as { g: number | null } | undefined;
+
+    const cost = row.cost_basis_money;
+    const value = row.position_value;
+
+    return {
+      ticker: row.ticker,
+      name: row.name,
+      quantity: row.quantity,
+      costBasisPrice: row.cost_basis_price,
+      costBasisMoney: cost,
+      markPrice: row.mark_price,
+      positionValue: value,
+      unrealizedPnl: row.unrealized_pnl,
+      percentOfNav: row.percent_of_nav,
+      returnPct: cost && value && cost !== 0 ? value / cost - 1 : null,
+      multiple: stats?.value ?? null,
+      multipleLabel: stats ? metric(key).label : null,
+      percentile: stats?.sufficient ? stats.percentile : null,
+      revenueGrowth: growth?.g ?? null,
+      onWatchlist: Boolean(row.on_watchlist),
+    };
+  });
+}
+
+export function getPortfolioSummary(userId: number): PortfolioSummary | null {
+  const conn = db();
+  const latest = conn
+    .prepare("SELECT MAX(report_date) AS d FROM holdings WHERE user_id = ?")
+    .get(userId) as { d: string | null };
+  if (!latest?.d) return null;
+
+  const holdings = getHoldings(userId);
+  const stockValue = holdings.reduce((sum, h) => sum + (h.positionValue ?? 0), 0);
+  const totalCost = holdings.reduce((sum, h) => sum + (h.costBasisMoney ?? 0), 0);
+  const unrealizedPnl = holdings.reduce((sum, h) => sum + (h.unrealizedPnl ?? 0), 0);
+
+  const nav = conn
+    .prepare(
+      "SELECT cash, total FROM ibkr_nav WHERE user_id = ? ORDER BY report_date DESC LIMIT 1",
+    )
+    .get(userId) as { cash: number | null; total: number | null } | undefined;
+
+  // Only holdings with enough history carry a percentile, so the weighted
+  // figure states how much of the book it actually covers rather than
+  // quietly averaging over a subset.
+  const rated = holdings.filter((h) => h.percentile !== null && h.positionValue);
+  const ratedValue = rated.reduce((sum, h) => sum + (h.positionValue ?? 0), 0);
+  const weighted = ratedValue
+    ? rated.reduce((sum, h) => sum + h.percentile! * (h.positionValue ?? 0), 0) / ratedValue
+    : null;
+
+  const total = nav?.total ?? null;
+
+  return {
+    reportDate: latest.d,
+    positions: holdings.length,
+    stockValue,
+    cash: nav?.cash ?? null,
+    total,
+    cashPct: total && nav?.cash != null ? nav.cash / total : null,
+    totalCost,
+    unrealizedPnl,
+    weightedPercentile: weighted,
+    weightedCoverage: stockValue ? ratedValue / stockValue : 0,
+  };
+}
