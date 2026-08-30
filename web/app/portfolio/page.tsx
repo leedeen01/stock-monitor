@@ -25,7 +25,7 @@ export default async function PortfolioPage() {
   const summary = getPortfolioSummary(user.id);
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-10 sm:px-6">
+    <main className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Portfolio</h1>
