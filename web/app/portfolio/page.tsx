@@ -106,10 +106,15 @@ export default async function PortfolioPage() {
       {holdings.length > 0 && summary ? (
         <>
           <section className="mt-8 grid gap-3 sm:grid-cols-4">
-            <Stat label="Portfolio" value={summary.total ? formatBig(summary.total) : formatBig(summary.stockValue)} />
+            <Stat
+              label="Portfolio"
+              value={formatBig(summary.total ?? summary.stockValue, false)}
+              hint={summary.baseCurrency}
+            />
             <Stat
               label="Unrealised"
-              value={formatBig(summary.unrealizedPnl)}
+              value={formatBig(summary.unrealizedPnl, false)}
+              hint={summary.baseCurrency}
               tone={summary.unrealizedPnl >= 0 ? "good" : "bad"}
             />
             <Stat

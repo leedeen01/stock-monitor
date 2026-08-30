@@ -300,14 +300,12 @@ function Row({ row }: { row: WatchlistRow }) {
         <span className={changeTone(row.changePct)}>
           {formatPercentChange(row.changePct)}
         </span>
+        {/* Every price carries its currency code. Nothing is converted
+            anywhere, so a number that does not say what it is in is a number
+            waiting to be misread. */}
         <div className="text-[11px] text-neutral-400">
           {formatPrice(row.close)}
-          {/* Only when it is not the default. Nothing is converted, so a price
-              that is not in dollars has to say so — 13 rows reading "USD"
-              would just be noise, one reading "SGD" is the whole point. */}
-          {row.currency !== "USD" && (
-            <span className="ml-1 text-neutral-500">{row.currency}</span>
-          )}
+          <span className="ml-1 text-neutral-500">{row.currency}</span>
         </div>
       </Td>
 

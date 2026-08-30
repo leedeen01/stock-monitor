@@ -73,12 +73,15 @@ export function HoldingsTable({ holdings }: { holdings: Holding[] }) {
               </td>
 
               <td className="px-3 py-2.5 text-right font-mono tabular-nums">
-                {h.positionValue !== null ? formatBig(h.positionValue) : "—"}
-                {h.currency && h.currency !== "USD" && (
-                  <span className="ml-1 text-[10px] text-neutral-500">
-                    {h.currency}
-                  </span>
-                )}
+                {/* Currency code, never a symbol. Nothing is converted here,
+                    so every figure has to say what it is in — "$38,075" beside
+                    a Singapore holding is worse than ambiguous, it is wrong. */}
+                {h.positionValue === null
+                  ? "—"
+                  : formatBig(h.positionValue, false)}
+                <span className="ml-1 text-[10px] text-neutral-500">
+                  {h.currency ?? "USD"}
+                </span>
                 <div className="text-[10px] text-neutral-400">
                   {h.quantity !== null ? `${h.quantity.toLocaleString()} sh` : ""}
                 </div>

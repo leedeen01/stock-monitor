@@ -736,7 +736,7 @@ export function getHoldings(userId: number): Holding[] {
 
   const rows = conn
     .prepare(
-      `SELECT h.ticker, t.name, h.quantity, h.cost_basis_price, h.cost_basis_money,
+      `SELECT h.ticker, h.currency, t.name, h.quantity, h.cost_basis_price, h.cost_basis_money,
               h.mark_price, h.position_value, h.unrealized_pnl, h.percent_of_nav,
               w.ticker IS NOT NULL AS on_watchlist,
               COALESCE(t.supported, 1) AS supported,
