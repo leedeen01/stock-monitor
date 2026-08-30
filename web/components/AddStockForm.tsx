@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 
 import { addStock, type StartResult } from "@/app/actions";
 import { useAdoptRunning, useJob } from "@/components/useJob";
@@ -25,6 +25,19 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
     null,
   );
   const root = useRef<HTMLDivElement>(null);
+
+  // Markets come from the groups themselves rather than a hardcoded list, so
+  // a market added in markets.py appears here without touching this file.
+  const markets = useMemo(
+    () => [...new Set(groups.map((g) => g.market))].sort((a, b) =>
+      a === "US" ? -1 : b === "US" ? 1 : a.localeCompare(b)),
+    [groups],
+  );
+  const [market, setMarket] = useState(markets[0] ?? "US");
+  const visibleGroups = useMemo(
+    () => groups.filter((g) => g.market === market),
+    [groups, market],
+  );
 
   const [jobId, setJobId] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null);
@@ -117,6 +130,31 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
           className="fixed left-4 right-4 top-1/2 z-40 -translate-y-1/2 rounded-lg border border-neutral-200 bg-white p-4 text-left shadow-xl dark:border-neutral-700 dark:bg-neutral-900 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[22rem] sm:max-w-[90vw] sm:translate-y-0"
         >
           <form action={action}>
+            {markets.length > 1 && (
+              <fieldset className="mb-3">
+                <legend className="mb-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                  Market — decides where its filings come from
+                </legend>
+                <div className="flex flex-wrap gap-1.5">
+                  {markets.map((code) => (
+                    <label key={code} className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="market"
+                        value={code}
+                        checked={market === code}
+                        onChange={() => setMarket(code)}
+                        className="peer sr-only"
+                      />
+                      <span className="inline-block rounded-md border border-neutral-300 px-2.5 py-1 text-xs peer-checked:border-neutral-900 peer-checked:bg-neutral-900 peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 dark:border-neutral-700 dark:peer-checked:border-neutral-100 dark:peer-checked:bg-neutral-100 dark:peer-checked:text-neutral-900">
+                        {code}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
             <input
               name="ticker"
               placeholder="Ticker, e.g. INTC"
@@ -130,7 +168,7 @@ export function AddStockForm({ groups }: { groups: GroupRef[] }) {
                 Groups — these decide which metrics the deep dive shows
               </legend>
               <div className="mt-1.5 space-y-1">
-                {groups.map((g) => (
+                {visibleGroups.map((g) => (
                   <label
                     key={g.id}
                     className="flex cursor-pointer items-center gap-2 text-sm"

@@ -47,6 +47,14 @@ export async function addStock(
     return { ok: false, message: "Pick at least one group." };
   }
 
+  // Which market decides everything downstream: the filings source, the
+  // yfinance symbol, the currency. Asked rather than guessed — probing for it
+  // once resolved SPYL to an entirely different fund.
+  const market = String(formData.get("market") ?? "US").toUpperCase();
+  if (!/^[A-Z]{2,6}$/.test(market)) {
+    return { ok: false, message: "Invalid market." };
+  }
+
   const conn = db();
   expireStaleJobs();
 
@@ -63,7 +71,12 @@ export async function addStock(
 
   const jobId = startJob({
     script: "add_ticker.py",
-    args: [ticker, "--groups", groupIds.join(","), "--user-id", String(user.id)],
+    args: [
+      ticker,
+      "--groups", groupIds.join(","),
+      "--user-id", String(user.id),
+      "--market", market,
+    ],
     kind: "add",
     userId: user.id,
     target: ticker,

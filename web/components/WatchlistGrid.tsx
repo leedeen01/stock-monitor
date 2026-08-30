@@ -83,6 +83,19 @@ const TOTAL_COLUMNS = COLUMNS.length + 1;
 export function WatchlistGrid({ rows }: { rows: WatchlistRow[] }) {
   // Cheapest-against-its-own-history first — the opinionated default that puts
   // the interesting rows where the eye lands.
+  // Markets present in the data, not a fixed list — a market added in
+  // markets.py shows up here on its own.
+  const markets = useMemo(
+    () => [...new Set(rows.map((r) => r.market))].sort((a, b) =>
+      a === "US" ? -1 : b === "US" ? 1 : a.localeCompare(b)),
+    [rows],
+  );
+  const [market, setMarket] = useState<string>("all");
+  const visible = useMemo(
+    () => (market === "all" ? rows : rows.filter((r) => r.market === market)),
+    [rows, market],
+  );
+
   const [sortKey, setSortKey] = useState<SortKey>("percentile");
   const [direction, setDirection] = useState<Direction>("asc");
 
@@ -105,14 +118,14 @@ export function WatchlistGrid({ rows }: { rows: WatchlistRow[] }) {
     };
 
     const map = new Map<string, WatchlistRow[]>();
-    for (const row of rows) {
+    for (const row of visible) {
       const key = row.group?.name ?? "Ungrouped";
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(row);
     }
     for (const list of map.values()) list.sort(compare);
     return map;
-  }, [rows, sortKey, direction]);
+  }, [visible, sortKey, direction]);
 
   const toggle = (column: Column) => {
     if (column.key === sortKey) {
@@ -124,7 +137,34 @@ export function WatchlistGrid({ rows }: { rows: WatchlistRow[] }) {
   };
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
+    <>
+      {markets.length > 1 && (
+        <div
+          role="tablist"
+          aria-label="Market"
+          className="mb-3 flex flex-wrap items-center gap-1"
+        >
+          <MarketTab
+            code="all"
+            label="All"
+            count={rows.length}
+            active={market === "all"}
+            onSelect={setMarket}
+          />
+          {markets.map((code) => (
+            <MarketTab
+              key={code}
+              code={code}
+              label={code}
+              count={rows.filter((r) => r.market === code).length}
+              active={market === code}
+              onSelect={setMarket}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
       <table className="w-full min-w-[680px] table-fixed text-sm">
         <colgroup>
           {COLUMNS.map((c) => (
@@ -199,7 +239,41 @@ export function WatchlistGrid({ rows }: { rows: WatchlistRow[] }) {
           </tbody>
         ))}
       </table>
-    </div>
+      </div>
+    </>
+  );
+}
+
+function MarketTab({
+  code,
+  label,
+  count,
+  active,
+  onSelect,
+}: {
+  code: string;
+  label: string;
+  count: number;
+  active: boolean;
+  onSelect: (code: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={() => onSelect(code)}
+      className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+        active
+          ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+          : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900"
+      }`}
+    >
+      {label}
+      <span className={active ? "ml-1.5 opacity-60" : "ml-1.5 text-neutral-400"}>
+        {count}
+      </span>
+    </button>
   );
 }
 
@@ -226,7 +300,15 @@ function Row({ row }: { row: WatchlistRow }) {
         <span className={changeTone(row.changePct)}>
           {formatPercentChange(row.changePct)}
         </span>
-        <div className="text-[11px] text-neutral-400">{formatPrice(row.close)}</div>
+        <div className="text-[11px] text-neutral-400">
+          {formatPrice(row.close)}
+          {/* Only when it is not the default. Nothing is converted, so a price
+              that is not in dollars has to say so — 13 rows reading "USD"
+              would just be noise, one reading "SGD" is the whole point. */}
+          {row.currency !== "USD" && (
+            <span className="ml-1 text-neutral-500">{row.currency}</span>
+          )}
+        </div>
       </Td>
 
       <Td>

@@ -141,6 +141,17 @@ export default async function PortfolioPage() {
             />
           </section>
 
+          {summary.currencies.length > 1 && (
+            <div className="mt-3">
+              <Notice tone="warn">
+                Holdings span {summary.currencies.join(", ")}. Nothing is
+                converted, so the totals above cover{" "}
+                <strong>{summary.baseCurrency}</strong> positions only —
+                a figure mixing currencies would be confidently wrong.
+              </Notice>
+            </div>
+          )}
+
           <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">
             {summary.positions} position{summary.positions === 1 ? "" : "s"} as of{" "}
             {summary.reportDate} — IBKR data refreshes overnight, so this lags the

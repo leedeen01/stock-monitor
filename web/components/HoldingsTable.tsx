@@ -74,6 +74,11 @@ export function HoldingsTable({ holdings }: { holdings: Holding[] }) {
 
               <td className="px-3 py-2.5 text-right font-mono tabular-nums">
                 {h.positionValue !== null ? formatBig(h.positionValue) : "—"}
+                {h.currency && h.currency !== "USD" && (
+                  <span className="ml-1 text-[10px] text-neutral-500">
+                    {h.currency}
+                  </span>
+                )}
                 <div className="text-[10px] text-neutral-400">
                   {h.quantity !== null ? `${h.quantity.toLocaleString()} sh` : ""}
                 </div>

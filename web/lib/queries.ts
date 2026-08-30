@@ -17,7 +17,14 @@ export type MetricStats = {
   groupMedian: number | null; // peer comparison across the group
 };
 
-export type GroupRef = { id: number; name: string; primaryMultiple: string };
+export type GroupRef = {
+  id: number;
+  name: string;
+  primaryMultiple: string;
+  /** Which market this profile is for. A REIT profile has no business
+   *  appearing when adding a US stock. */
+  market: string;
+};
 
 export type WatchlistRow = {
   market: string;
@@ -282,23 +289,31 @@ export function getGroups(userId: number): GroupRef[] {
   return (
     db()
       .prepare(
-        `SELECT id, name, primary_multiple FROM metric_groups
-          WHERE user_id = ? ORDER BY id`,
+        `SELECT id, name, primary_multiple, COALESCE(market, 'US') AS market
+           FROM metric_groups WHERE user_id = ? ORDER BY market, id`,
       )
-      .all(userId) as { id: number; name: string; primary_multiple: string }[]
-  ).map((g) => ({ id: g.id, name: g.name, primaryMultiple: g.primary_multiple }));
+      .all(userId) as {
+        id: number; name: string; primary_multiple: string; market: string;
+      }[]
+  ).map((g) => ({
+    id: g.id, name: g.name, primaryMultiple: g.primary_multiple, market: g.market,
+  }));
 }
 
 function groupsFor(ticker: string, userId: number): GroupRef[] {
   return (
     db()
       .prepare(
-        `SELECT g.id, g.name, g.primary_multiple
+        `SELECT g.id, g.name, g.primary_multiple, COALESCE(g.market, 'US') AS market
          FROM stock_groups sg JOIN metric_groups g ON g.id = sg.group_id
          WHERE sg.ticker = ? AND sg.user_id = ? ORDER BY g.id`,
       )
-      .all(ticker, userId) as { id: number; name: string; primary_multiple: string }[]
-  ).map((g) => ({ id: g.id, name: g.name, primaryMultiple: g.primary_multiple }));
+      .all(ticker, userId) as {
+        id: number; name: string; primary_multiple: string; market: string;
+      }[]
+  ).map((g) => ({
+    id: g.id, name: g.name, primaryMultiple: g.primary_multiple, market: g.market,
+  }));
 }
 
 /** Attention-worthy signals, computed against a year ago. */
@@ -667,6 +682,7 @@ export function getSegments(ticker: string): SegmentBreakdown | null {
 
 export type Holding = {
   ticker: string;
+  currency: string | null;
   name: string | null;
   quantity: number | null;
   costBasisPrice: number | null;
@@ -706,6 +722,9 @@ export type PortfolioSummary = {
    */
   weightedPercentile: number | null;
   weightedCoverage: number;
+  /** Currencies held. More than one means the totals cover only the first. */
+  currencies: string[];
+  baseCurrency: string;
 };
 
 export function getHoldings(userId: number): Holding[] {
@@ -733,7 +752,7 @@ export function getHoldings(userId: number): Holding[] {
 
   return rows.map((r) => {
     const row = r as unknown as {
-      ticker: string; name: string | null; quantity: number | null;
+      ticker: string; currency: string | null; name: string | null; quantity: number | null;
       cost_basis_price: number | null; cost_basis_money: number | null;
       mark_price: number | null; position_value: number | null;
       unrealized_pnl: number | null; percent_of_nav: number | null;
@@ -757,6 +776,7 @@ export function getHoldings(userId: number): Holding[] {
 
     return {
       ticker: row.ticker,
+      currency: row.currency,
       name: row.name,
       quantity: row.quantity,
       costBasisPrice: row.cost_basis_price,
@@ -784,9 +804,17 @@ export function getPortfolioSummary(userId: number): PortfolioSummary | null {
   if (!latest?.d) return null;
 
   const holdings = getHoldings(userId);
-  const stockValue = holdings.reduce((sum, h) => sum + (h.positionValue ?? 0), 0);
-  const totalCost = holdings.reduce((sum, h) => sum + (h.costBasisMoney ?? 0), 0);
-  const unrealizedPnl = holdings.reduce((sum, h) => sum + (h.unrealizedPnl ?? 0), 0);
+
+  // Nothing is converted, so nothing is summed across currencies. Adding SGD to
+  // USD would produce a total that is confidently wrong and looks fine. Totals
+  // cover the dominant currency and the page says which.
+  const currencies = [...new Set(holdings.map((h) => h.currency ?? "USD"))].sort();
+  const baseCurrency = currencies.includes("USD") ? "USD" : (currencies[0] ?? "USD");
+  const inBase = holdings.filter((h) => (h.currency ?? "USD") === baseCurrency);
+
+  const stockValue = inBase.reduce((sum, h) => sum + (h.positionValue ?? 0), 0);
+  const totalCost = inBase.reduce((sum, h) => sum + (h.costBasisMoney ?? 0), 0);
+  const unrealizedPnl = inBase.reduce((sum, h) => sum + (h.unrealizedPnl ?? 0), 0);
 
   const nav = conn
     .prepare(
@@ -797,7 +825,7 @@ export function getPortfolioSummary(userId: number): PortfolioSummary | null {
   // Only holdings with enough history carry a percentile, so the weighted
   // figure states how much of the book it actually covers rather than
   // quietly averaging over a subset.
-  const rated = holdings.filter((h) => h.percentile !== null && h.positionValue);
+  const rated = inBase.filter((h) => h.percentile !== null && h.positionValue);
   const ratedValue = rated.reduce((sum, h) => sum + (h.positionValue ?? 0), 0);
   const weighted = ratedValue
     ? rated.reduce((sum, h) => sum + h.percentile! * (h.positionValue ?? 0), 0) / ratedValue
@@ -816,5 +844,7 @@ export function getPortfolioSummary(userId: number): PortfolioSummary | null {
     unrealizedPnl,
     weightedPercentile: weighted,
     weightedCoverage: stockValue ? ratedValue / stockValue : 0,
+    currencies,
+    baseCurrency,
   };
 }
