@@ -191,6 +191,14 @@ def _save_state(
 
 
 def tickers_in_scope(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[str]:
+    """Which tickers a rule applies to, always within its owner's watchlist.
+
+    Scope is bounded by the rule's user, never by the registry. The registry
+    is shared, so an unscoped 'all' would fire someone's rules against
+    tickers another account follows.
+    """
+    user_id = rule["user_id"]
+
     if rule["scope"] == "ticker":
         return [rule["scope_ref"].upper()] if rule["scope_ref"] else []
     if rule["scope"] == "group":
@@ -200,15 +208,23 @@ def tickers_in_scope(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[str]:
                 """
                 SELECT sg.ticker FROM stock_groups sg
                 JOIN tickers t ON t.ticker = sg.ticker AND t.supported = 1
-                WHERE sg.group_id = ? ORDER BY sg.ticker
+                JOIN watchlist w ON w.ticker = sg.ticker AND w.user_id IS sg.user_id
+                WHERE sg.group_id = ? AND sg.user_id IS ?
+                ORDER BY sg.ticker
                 """,
-                (rule["scope_ref"],),
+                (rule["scope_ref"], user_id),
             )
         ]
     return [
         r["ticker"]
         for r in conn.execute(
-            "SELECT ticker FROM tickers WHERE supported = 1 ORDER BY ticker"
+            """
+            SELECT w.ticker FROM watchlist w
+            JOIN tickers t ON t.ticker = w.ticker AND t.supported = 1
+            WHERE w.user_id IS ?
+            ORDER BY w.ticker
+            """,
+            (user_id,),
         )
     ]
 
@@ -254,6 +270,9 @@ def evaluate_rule(conn: sqlite3.Connection, rule: sqlite3.Row) -> list[dict]:
         if crossed:
             fired.append({
                 "rule_id": rule["id"],
+                # Denormalised from the rule: the homepage reads events on
+                # every render, and an event's owner never changes.
+                "user_id": rule["user_id"],
                 "ticker": ticker,
                 "trigger_date": latest,
                 "metric_key": resolve_metric(conn, ticker, rule["metric_key"], rule["user_id"]),
@@ -312,9 +331,10 @@ def record(conn: sqlite3.Connection, events: list[dict]) -> int:
     conn.executemany(
         """
         INSERT OR IGNORE INTO alert_events
-            (rule_id, ticker, trigger_date, created_at, metric_key, value, percentile, detail)
-        VALUES (:rule_id, :ticker, :trigger_date, :created_at, :metric_key,
-                :value, :percentile, :detail)
+            (rule_id, user_id, ticker, trigger_date, created_at, metric_key,
+             value, percentile, detail)
+        VALUES (:rule_id, :user_id, :ticker, :trigger_date, :created_at,
+                :metric_key, :value, :percentile, :detail)
         """,
         [{**e, "created_at": _now()} for e in events],
     )
@@ -380,13 +400,18 @@ DEFAULT_RULES = [
 ]
 
 
-def seed_default_rules(conn: sqlite3.Connection, verbose: bool = True) -> int:
-    """Insert the starter rules. Skips any whose name already exists, so it is
-    safe to re-run and won't resurrect a rule you deleted on purpose."""
+def seed_default_rules(conn: sqlite3.Connection, user_id: int | None = None,
+                       verbose: bool = True) -> int:
+    """Insert the starter rules for one account.
+
+    Skips any whose name already exists FOR THAT USER, so it is safe to
+    re-run and will not resurrect a rule someone deleted on purpose.
+    """
     added = 0
     for spec in DEFAULT_RULES:
         exists = conn.execute(
-            "SELECT 1 FROM alert_rules WHERE name = ?", (spec["name"],)
+            "SELECT 1 FROM alert_rules WHERE name = ? AND user_id IS ?",
+            (spec["name"], user_id),
         ).fetchone()
         if exists:
             continue
@@ -394,7 +419,8 @@ def seed_default_rules(conn: sqlite3.Connection, verbose: bool = True) -> int:
         scope_ref = spec["scope_ref"]
         if spec["scope"] == "group" and scope_ref:
             row = conn.execute(
-                "SELECT id FROM metric_groups WHERE name = ?", (scope_ref,)
+                "SELECT id FROM metric_groups WHERE name = ? AND user_id IS ?",
+                (scope_ref, user_id),
             ).fetchone()
             if not row:
                 if verbose:
@@ -405,10 +431,11 @@ def seed_default_rules(conn: sqlite3.Connection, verbose: bool = True) -> int:
         conn.execute(
             """
             INSERT INTO alert_rules
-                (name, scope, scope_ref, metric_key, condition, threshold, enabled, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                (user_id, name, scope, scope_ref, metric_key, condition, threshold,
+                 enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
             """,
-            (spec["name"], spec["scope"], scope_ref, spec["metric_key"],
+            (user_id, spec["name"], spec["scope"], scope_ref, spec["metric_key"],
              spec["condition"], spec["threshold"], _now()),
         )
         added += 1
@@ -423,13 +450,15 @@ def main() -> None:
     parser.add_argument("--list", action="store_true", help="Show rules and exit")
     parser.add_argument("--open", action="store_true", help="Show unacknowledged events")
     parser.add_argument("--seed", action="store_true", help="Insert the default rules")
+    parser.add_argument("--user-id", type=int, default=None,
+                        help="Seed rules for this account")
     args = parser.parse_args()
 
     conn = db.connect()
     db.init_schema(conn)
 
     if args.seed:
-        seed_default_rules(conn)
+        seed_default_rules(conn, user_id=args.user_id)
         return
 
     if args.list:

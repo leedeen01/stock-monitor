@@ -174,9 +174,10 @@ export async function registerUser(
  * has a watchlist, groups and alerts sitting ownerless, and the person who
  * built it should find them rather than an empty page.
  *
- * Everyone else gets the default metric profiles seeded fresh. That runs
- * detached because it is not worth making registration wait on, and a failure
- * leaves an account with no groups rather than no account.
+ * Everyone else gets the default metric profiles and starter alert rules
+ * seeded fresh. That runs detached because it is not worth making
+ * registration wait on, and a failure leaves an account without its
+ * defaults rather than without an account.
  */
 function provisionAccount(userId: number, isOwner: boolean): void {
   if (isOwner) {
@@ -204,7 +205,7 @@ function provisionAccount(userId: number, isOwner: boolean): void {
     if (groups.c > 0) return;
   }
 
-  const child = spawn(PYTHON, ["groups.py", "--user-id", String(userId)], {
+  const child = spawn(PYTHON, ["provision.py", "--user-id", String(userId)], {
     cwd: INGEST_DIR,
     detached: true,
     stdio: "ignore",

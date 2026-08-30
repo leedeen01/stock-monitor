@@ -305,3 +305,56 @@ def test_group_scope_limits_which_tickers_are_checked(tmp_path):
     rule = conn.execute("SELECT * FROM alert_rules").fetchone()
     assert alerts.tickers_in_scope(conn, rule) == ["AAA"]
     conn.close()
+
+
+# --- ownership and tenancy -----------------------------------------------
+#
+# All three of these were live bugs after the multi-tenant migration: events
+# were written with no owner and so were invisible to every account, seeded
+# rules had no owner either, and an 'all' rule swept the whole shared registry
+# rather than its owner's watchlist.
+
+def test_events_carry_the_rules_owner(tmp_path):
+    conn = db.connect(tmp_path / "own.db")
+    db.init_schema(conn)
+    seed_user(conn)
+    conn.execute("INSERT INTO tickers (ticker, name, supported) VALUES ('TEST','T',1)")
+    conn.execute(
+        "INSERT INTO watchlist (user_id, ticker, added_at) VALUES (1,'TEST','2024-01-01')")
+    _insert_day(conn, "2024-01-02", 0.5)
+    rule = _add_rule(conn, "value_below", 0.8)
+
+    alerts.record(conn, alerts.evaluate_rule(conn, rule))
+
+    owners = [r["user_id"] for r in conn.execute("SELECT user_id FROM alert_events")]
+    assert owners, "no events fired"
+    assert all(o == 1 for o in owners), (
+        f"events must belong to the rule's owner, got {owners} - "
+        "a NULL owner is invisible to every account"
+    )
+    conn.close()
+
+
+def test_scope_all_is_bounded_by_the_owners_watchlist(tmp_path):
+    conn = db.connect(tmp_path / "tenancy.db")
+    db.init_schema(conn)
+    seed_user(conn, 1)
+    seed_user(conn, 2)
+
+    # Both tickers are in the shared registry; each user follows one.
+    conn.executescript(
+        """
+        INSERT INTO tickers (ticker, name, supported) VALUES ('MINE','M',1), ('THEIRS','T',1);
+        INSERT INTO watchlist (user_id, ticker, added_at) VALUES
+            (1, 'MINE', '2024-01-01'), (2, 'THEIRS', '2024-01-01');
+        """
+    )
+    conn.commit()
+    rule = _add_rule(conn, "value_below", 0.8)   # owned by user 1
+
+    scope = alerts.tickers_in_scope(conn, rule)
+
+    assert scope == ["MINE"], (
+        f"a scope='all' rule must stay inside its owner's watchlist, got {scope}"
+    )
+    conn.close()
