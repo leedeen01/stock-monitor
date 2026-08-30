@@ -378,3 +378,107 @@ def test_a_qualified_symbol_is_trusted_rather_than_probed(monkeypatch):
     monkeypatch.setattr(funds.yf, "Ticker", FakeTicker)
     assert funds.resolve("SPYL.L")["price_symbol"] == "SPYL.L"
     assert seen == ["SPYL.L"], f"should not probe alternatives, tried {seen}"
+
+
+# --- corporate actions: an independent check on our splits -----------------
+
+
+def _action(symbol="NVDA", ratio="10 FOR 1", date="20240610", action_id="CA1"):
+    return (
+        f'<CorporateAction actionID="{action_id}" symbol="{symbol}" '
+        f'reportDate="{date}" type="FS" quantity="900" value="0" '
+        f'actionDescription="{symbol}(US67066G1040) SPLIT {ratio} '
+        f'({symbol}, NVIDIA CORP, US67066G1040)" />'
+    )
+
+
+def _with_actions(actions: str) -> bytes:
+    return (
+        '<?xml version="1.0"?><FlexQueryResponse><FlexStatements><FlexStatement>'
+        f"<CorporateActions>{actions}</CorporateActions>"
+        "</FlexStatement></FlexStatements></FlexQueryResponse>"
+    ).encode()
+
+
+def test_the_split_ratio_is_read_out_of_the_description():
+    """IBKR writes it as prose, not as a field."""
+    assert ibkr.split_ratio_from("NVDA(US) SPLIT 10 FOR 1 (NVDA)") == 10
+    assert ibkr.split_ratio_from("AAPL SPLIT 4 FOR 1") == 4
+    assert ibkr.split_ratio_from("A reverse SPLIT 1 FOR 8 happened") == 0.125
+    assert ibkr.split_ratio_from("CASH DIVIDEND USD 0.24") is None
+    assert ibkr.split_ratio_from(None) is None
+
+
+def test_agreeing_splits_report_nothing(tmp_path):
+    conn = db.connect(tmp_path / "ok.db")
+    db.init_schema(conn)
+    seed_user(conn)
+    conn.execute("INSERT INTO share_splits (ticker,date,ratio) VALUES ('NVDA','2024-06-10',10.0)")
+    conn.commit()
+
+    ibkr.store(conn, 1, ibkr.parse(_with_actions(_action())))
+    assert ibkr.check_splits(conn, 1) == []
+    conn.close()
+
+
+def test_a_split_we_never_recorded_is_reported(tmp_path):
+    """The dangerous case. Prices are split-adjusted and share counts are
+    normalised with share_splits; a missing entry makes every multiple before
+    that date wrong by the ratio, and nothing else would say so."""
+    conn = db.connect(tmp_path / "missing.db")
+    db.init_schema(conn)
+    seed_user(conn)
+
+    ibkr.store(conn, 1, ibkr.parse(_with_actions(_action())))
+    problems = ibkr.check_splits(conn, 1)
+
+    assert len(problems) == 1
+    assert problems[0]["issue"] == "missing"
+    assert problems[0]["broker_ratio"] == 10
+    assert "10x" in problems[0]["detail"]
+    conn.close()
+
+
+def test_a_disagreeing_ratio_is_reported(tmp_path):
+    conn = db.connect(tmp_path / "wrong.db")
+    db.init_schema(conn)
+    seed_user(conn)
+    conn.execute("INSERT INTO share_splits (ticker,date,ratio) VALUES ('NVDA','2024-06-11',4.0)")
+    conn.commit()
+
+    ibkr.store(conn, 1, ibkr.parse(_with_actions(_action())))
+    problems = ibkr.check_splits(conn, 1)
+
+    assert len(problems) == 1 and problems[0]["issue"] == "mismatch"
+    assert problems[0]["broker_ratio"] == 10 and problems[0]["our_ratio"] == 4.0
+    conn.close()
+
+
+def test_a_split_booked_a_day_apart_still_matches(tmp_path):
+    """Brokers book on settlement, which can differ from the market date."""
+    conn = db.connect(tmp_path / "near.db")
+    db.init_schema(conn)
+    seed_user(conn)
+    conn.execute("INSERT INTO share_splits (ticker,date,ratio) VALUES ('NVDA','2024-06-08',10.0)")
+    conn.commit()
+
+    ibkr.store(conn, 1, ibkr.parse(_with_actions(_action())))
+    assert ibkr.check_splits(conn, 1) == []
+    conn.close()
+
+
+def test_non_split_actions_are_stored_but_not_compared(tmp_path):
+    conn = db.connect(tmp_path / "div.db")
+    db.init_schema(conn)
+    seed_user(conn)
+
+    dividend = (
+        '<CorporateAction actionID="CA9" symbol="KO" reportDate="20260601" '
+        'type="DI" actionDescription="KO(US1912161007) CASH DIVIDEND USD 0.51" />'
+    )
+    ibkr.store(conn, 1, ibkr.parse(_with_actions(dividend)))
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM ibkr_corporate_actions").fetchone()[0] == 1
+    assert ibkr.check_splits(conn, 1) == []
+    conn.close()

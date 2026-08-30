@@ -407,3 +407,24 @@ CREATE TABLE IF NOT EXISTS ibkr_nav (
     total       REAL,
     PRIMARY KEY (user_id, report_date)
 );
+
+-- Corporate actions as the broker recorded them.
+--
+-- Rare, and worth having anyway: this is an independent record of every split,
+-- against which our own share_splits can be checked. A 4:1 split mishandled
+-- makes historical P/E wrong by exactly 4x and looks entirely plausible, which
+-- is a failure this project has hit three separate times.
+CREATE TABLE IF NOT EXISTS ibkr_corporate_actions (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action_id   TEXT NOT NULL,
+    ticker      TEXT,
+    report_date TEXT,
+    action_type TEXT,
+    description TEXT,
+    quantity    REAL,
+    value       REAL,
+    PRIMARY KEY (user_id, action_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_corp_actions_ticker
+    ON ibkr_corporate_actions (ticker, report_date);

@@ -16,6 +16,7 @@ the poll below backs off rather than spinning.
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -221,6 +222,21 @@ def parse(xml: bytes) -> dict:
             "realized_pnl": _num(el.get("fifoPnlRealized")),
         })
 
+    actions = []
+    for el in root.iter("CorporateAction"):
+        action_id = (el.get("actionID") or el.get("transactionID") or "").strip()
+        if not action_id:
+            continue
+        actions.append({
+            "action_id": action_id,
+            "ticker": normalize_symbol(el.get("symbol")),
+            "report_date": _date(el.get("reportDate") or el.get("dateTime")),
+            "action_type": (el.get("type") or "").strip() or None,
+            "description": (el.get("actionDescription") or "").strip() or None,
+            "quantity": _num(el.get("quantity")),
+            "value": _num(el.get("value") or el.get("proceeds")),
+        })
+
     cash = []
     for el in root.iter("CashReportCurrency"):
         cash.append({
@@ -243,7 +259,8 @@ def parse(xml: bytes) -> dict:
             "total": _num(el.get("total")),
         })
 
-    return {"positions": positions, "trades": trades, "cash": cash, "nav": nav}
+    return {"positions": positions, "trades": trades, "cash": cash,
+            "nav": nav, "actions": actions}
 
 
 # --- storage ----------------------------------------------------------------
@@ -337,6 +354,19 @@ def store(conn: sqlite3.Connection, user_id: int, parsed: dict) -> dict[str, int
     )
     counts["nav"] = len([n for n in parsed["nav"] if n["report_date"]])
 
+    conn.executemany(
+        """
+        INSERT INTO ibkr_corporate_actions
+            (user_id, action_id, ticker, report_date, action_type, description,
+             quantity, value)
+        VALUES (:user_id, :action_id, :ticker, :report_date, :action_type,
+                :description, :quantity, :value)
+        ON CONFLICT(user_id, action_id) DO NOTHING
+        """,
+        [{**a, "user_id": user_id} for a in parsed.get("actions", [])],
+    )
+    counts["actions"] = len(parsed.get("actions", []))
+
     conn.commit()
     return counts
 
@@ -429,6 +459,109 @@ def sync_all(conn, verbose: bool = True) -> dict:
     return {"ok": ok, "failed": failed, "unmatched": sorted(unmatched)}
 
 
+# --- the reason corporate actions are collected ------------------------------
+
+SPLIT_RATIO = re.compile(r"SPLIT\s+([\d.]+)\s+FOR\s+([\d.]+)", re.I)
+
+#: Ratios agreeing to within this are the same split reported slightly
+#: differently. Anything wider is a real disagreement.
+RATIO_TOLERANCE = 0.01
+
+#: A broker books a split within a day or two of the market; the exact date can
+#: differ by a settlement day.
+DATE_WINDOW_DAYS = 5
+
+
+def split_ratio_from(description: str | None) -> float | None:
+    """Pull the ratio out of the broker's description text.
+
+    IBKR writes it as prose - "NVDA(US67066G1040) SPLIT 10 FOR 1" - rather than
+    as a field, so it has to be read out of the sentence.
+    """
+    if not description:
+        return None
+    match = SPLIT_RATIO.search(description)
+    if not match:
+        return None
+    try:
+        new, old = float(match.group(1)), float(match.group(2))
+        return new / old if old else None
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def check_splits(conn, user_id: int) -> list[dict]:
+    """Compare the broker's splits against the ones our prices are built on.
+
+    This is the whole point of collecting corporate actions. Share counts are
+    normalised into current-share terms using `share_splits`; if that table is
+    wrong, historical P/E is wrong by exactly the split factor and looks
+    entirely plausible. This project has hit that three times - NVIDIA filing
+    shares in thousands, AMD at the opposite scale, and the adjustment factor
+    itself - so an independent record is worth more than its rarity suggests.
+
+    Returns disagreements only. An empty list is the expected result.
+    """
+    from datetime import date, timedelta
+
+    problems: list[dict] = []
+    rows = conn.execute(
+        """
+        SELECT ticker, report_date, description
+          FROM ibkr_corporate_actions
+         WHERE user_id = ? AND ticker IS NOT NULL AND report_date IS NOT NULL
+        """,
+        (user_id,),
+    ).fetchall()
+
+    for row in rows:
+        theirs = split_ratio_from(row["description"])
+        if theirs is None:
+            continue                      # not a split; nothing to compare
+
+        try:
+            when = date.fromisoformat(row["report_date"])
+        except ValueError:
+            continue
+        low = (when - timedelta(days=DATE_WINDOW_DAYS)).isoformat()
+        high = (when + timedelta(days=DATE_WINDOW_DAYS)).isoformat()
+
+        ours = conn.execute(
+            "SELECT date, ratio FROM share_splits "
+            "WHERE ticker = ? AND date BETWEEN ? AND ?",
+            (row["ticker"], low, high),
+        ).fetchone()
+
+        if ours is None:
+            problems.append({
+                "ticker": row["ticker"],
+                "date": row["report_date"],
+                "issue": "missing",
+                "broker_ratio": theirs,
+                "our_ratio": None,
+                "detail": (
+                    f"{row['ticker']}: broker reports a {theirs:g}:1 split around "
+                    f"{row['report_date']} that our price data has no record of. "
+                    f"Historical multiples before that date are wrong by {theirs:g}x."
+                ),
+            })
+        elif abs(ours["ratio"] - theirs) > RATIO_TOLERANCE:
+            problems.append({
+                "ticker": row["ticker"],
+                "date": row["report_date"],
+                "issue": "mismatch",
+                "broker_ratio": theirs,
+                "our_ratio": ours["ratio"],
+                "detail": (
+                    f"{row['ticker']}: broker says {theirs:g}:1 on "
+                    f"{row['report_date']}, our data says {ours['ratio']:g}:1 on "
+                    f"{ours['date']}."
+                ),
+            })
+
+    return problems
+
+
 # --- entry point ------------------------------------------------------------
 
 
@@ -448,17 +581,27 @@ def sync(conn, user_id: int, token: str, query_id: str,
     counts = store(conn, user_id, parsed)
 
     unmatched = unmatched_tickers(conn, user_id)
+
+    # Rare, and loud when it happens: a split we disagree with makes every
+    # multiple before that date wrong by the ratio.
+    split_problems = check_splits(conn, user_id)
+    for problem in split_problems:
+        print(f"  SPLIT CHECK: {problem['detail']}")
+
     detail = (
         f"{counts['holdings']} position(s), {counts['trades']} trade(s), "
         f"{counts['nav']} NAV row(s)."
     )
     if unmatched:
-        detail += f" Not on any watchlist: {', '.join(unmatched[:8])}."
+        detail += f" No filings yet: {', '.join(unmatched[:8])}."
+    if split_problems:
+        detail += f" {len(split_problems)} split disagreement(s) - see the log."
 
     record_sync(conn, user_id, "ok", detail)
     if verbose:
         print(detail)
-    return {**counts, "unmatched": unmatched, "detail": detail}
+    return {**counts, "unmatched": unmatched,
+            "split_problems": split_problems, "detail": detail}
 
 
 def main() -> int:
