@@ -12,36 +12,30 @@ folder holding everything stateful.
 
 ---
 
-## What "public" means here
+## Access model
 
-This deploys with no login. That is the chosen configuration: the watchlist is
-not sensitive, and an open URL is the point of not needing a VPN client on
-every device you want to check it from.
+**The app requires sign-in.** Every page — watchlist, alerts, deep dives —
+redirects to `/login` without a session, and `/api/jobs` answers 401. There is
+no public surface beyond the sign-in and registration pages themselves.
 
-Assume the hostname is known. Cloudflare issues a TLS certificate for it, every
-public certificate lands in Certificate Transparency logs, and those logs are
-crawled continuously — so the name is searchable within minutes of creation and
-will get probed by bots regardless of how obscure you make it. Plan around it
-being found, not around it staying quiet.
+The tunnel hostname is still reachable by anyone; what changed is that reaching
+it gets you a login form. Assume the hostname is discoverable regardless:
+Cloudflare issues a certificate for it and every public certificate lands in
+Certificate Transparency logs within minutes.
 
-Two consequences worth knowing up front rather than discovering:
+**Accounts are per-user.** Each account has its own watchlist, metric groups,
+alert rules and brokerage link. Market data — filings, prices, derived ratios —
+is shared, because it is a fact about a company rather than about a person.
 
-**The write actions are open too.** Add Stock, Remove, Refresh Now and the
-alert rule editor are all reachable by anyone who loads the page. Removing a
-stock keeps its underlying history and `stocks.db` is small enough to back up,
-so this is recoverable rather than destructive.
+**Registration is invite-gated by default.** Set `SIGNUP_INVITE_CODE` and share
+it with people you want in. `SIGNUP_OPEN=true` opens registration to anyone;
+leaving both unset closes it entirely. Everything fails closed: with
+`AUTH_SECRET` unset nobody can sign in at all.
 
-**Add Stock spawns processes.** Each submission runs up to four Python
-subprocesses with timeouts up to five minutes, and unlike Refresh Now it has no
-in-flight guard — `refreshNow` refuses to start if a run began in the last 30
-minutes, `addStock` has no equivalent. Something looping on that form will pin
-the NAS and get your SEC contact address rate-limited. Of everything here, this
-is the one that costs more than an annoyance.
-
-Neither requires a decision now. Both are fixable later from the Cloudflare
-dashboard with no redeploy — see [Locking it down later](#locking-it-down-later).
-
----
+> **The first account to register adopts the existing data.** An install that
+> predates accounts has a watchlist, groups and alerts sitting ownerless, and
+> the first sign-up claims them. Register yourself before sharing the invite
+> code, or someone else inherits your watchlist.
 
 ## 1. On the NAS, once
 
@@ -143,8 +137,9 @@ a pending zone looks correct and simply fails to resolve.
 fails too, because the app publishes no ports.
 
 Saving creates the DNS record automatically. If offered the option to protect
-the hostname with Access, decline — that is the login gate, and this deployment
-is intentionally public.
+the hostname with Cloudflare Access, decline for now — the app has its own
+sign-in, and adding Access as well means two login prompts. See
+[Hardening beyond the login](#hardening-beyond-the-login) if you want both.
 
 ### D. Hand the token to Docker
 
@@ -164,9 +159,20 @@ TUNNEL_TOKEN=<the token from step 4>
 DATA_DIR=/volume1/docker/stock-monitor/data
 TZ=Asia/Singapore
 DAILY_CRON=0 6 * * *
-AUTH_PASSWORD=<pick one>
+
 AUTH_SECRET=<openssl rand -hex 32>
+SIGNUP_INVITE_CODE=<a phrase you share with people you want in>
+ENCRYPTION_KEY=<openssl rand -hex 32>
 ```
+
+`AUTH_SECRET` signs session cookies — rotating it signs everyone out, which is
+how you revoke access. `ENCRYPTION_KEY` is deliberately separate: it encrypts
+stored brokerage tokens, and signing everyone out should not also shred those.
+
+> **Set these before you pull, not after.** The app is private now, so a
+> container that starts without `AUTH_SECRET` serves a login page nobody can
+> get past. There is no recovery through the UI — only editing `.env` over SSH
+> and restarting.
 
 `AUTH_*` gates the private views only — the watchlist, alerts and deep dives
 stay public. Leave them unset and login is disabled and `/portfolio` stays
@@ -197,16 +203,19 @@ Or **Docker → Project → Create** pointed at
 `/volume1/docker/stock-monitor/src`. Startup is now a download rather than a
 build — under a minute instead of several.
 
-## 6. Verify
+## 6. Verify and claim your account
 
-- Container `stock-monitor` reaches **healthy** (it polls its own homepage).
-- Open the hostname in a private window — the grid should load straight away
-  with your tickers, no prompt.
-- Try it off your home network, on mobile data, to confirm the tunnel is
-  actually serving rather than you reaching the NAS over the LAN.
-- Next morning, check `data/logs/` for a new `daily_*.log`.
-
----
+1. Container `stock-monitor` reaches **healthy**.
+2. Open the hostname — you should land on **the sign-in page**, not the
+   watchlist. Seeing the grid without signing in means `AUTH_SECRET` did not
+   reach the container.
+3. Go to `/signup` and register. **Do this before sharing the invite code**:
+   the first account adopts the existing watchlist, groups and alerts.
+4. You are offered the IBKR link step; skipping is fine.
+5. The grid should show your tickers, with your email in the header.
+6. Try it on mobile data, to confirm the tunnel is actually serving rather than
+   you reaching the NAS over the LAN.
+7. Next morning, check `data/logs/` for a fresh `daily_*.log`.
 
 ## Operating it
 
@@ -248,32 +257,33 @@ Everything else rebuilds from EDGAR.
 | Cloudflare shows 502 | App is not healthy yet — the tunnel waits on the healthcheck, so look at the app container's logs |
 | Hostname unreachable from outside | Tunnel not connected — check the `cloudflared` container logs, and that the public hostname points at `app:3000` and not `localhost` |
 | Daily job never runs | `docker exec stock-monitor crontab -l -u root` and `cat /app/data/logs/cron.log`. Cron gets a scrubbed environment; the entrypoint writes the needed vars into `/etc/cron.d/stock-monitor` |
+| Login page appears but no password works | No account exists yet — go to `/signup`. If registration says it is closed, `SIGNUP_INVITE_CODE` is unset |
+| Signed in but the watchlist is empty | Another account adopted the data first. Check `SELECT email, id FROM users` and reassign, or sign in as that account |
+| Locked out entirely | Edit `.env` over SSH and `docker compose up -d`. There is no UI recovery path |
 | SEC requests return 403 | `SEC_CONTACT` is unset or empty — EDGAR rejects requests without a real contact address |
 | `docker compose pull` says `denied` | The GHCR package is still private. Set it public in Package settings, or `docker login ghcr.io` with a `read:packages` token |
 | Pushed to main but nothing changed | The workflow skips doc-only commits (`paths-ignore`). Check the Actions tab; run it manually with **Run workflow** if needed |
 | `no such file or directory` on entrypoint.sh | CRLF line endings. `.gitattributes` forces LF; if you copied over SMB rather than cloning, re-copy |
 
-## Locking it down later
+## Hardening beyond the login
 
-All of these are Cloudflare dashboard changes. None needs a rebuild, a redeploy
-or a code change, so none of it has to be decided now.
+The app now authenticates for itself, so the Cloudflare Access layer that this
+guide used to recommend is redundant for keeping strangers out. Two things are
+still worth knowing:
 
-**Close it entirely.** Zero Trust → Access → Applications → Add an application
-→ Self-hosted. Domain = your hostname, path empty so it covers everything.
-Policy: Allow, include Emails → your address. Login method: One-time PIN, no
-identity provider needed. Set a long session so you are not re-authenticating
-constantly. Free up to 50 users.
+**Cloudflare Access as a second door.** Zero Trust → Access → Applications →
+Self-hosted, policy allowing your email. Requests failing it never reach the
+NAS at all, so brute-force attempts stop at Cloudflare's edge rather than in
+the app. Belt and braces; skip it unless you want the URL to be unguessable to
+unauthenticated traffic.
 
-**Keep it readable but stop the process-spawning.** A WAF rate-limiting rule on
-`POST` requests — say 5 per minute per IP — leaves normal browsing untouched
-while making the Add Stock loop described above pointless. Server actions all
-arrive as POSTs to the page path, so one rule covers every write. Free tier
-allows one rate-limiting rule.
+**A WAF rate limit on `POST`.** The app already throttles failed sign-ins per
+IP, in memory. A Cloudflare rule adds a layer that survives restarts and does
+not consume a container thread. Free tier allows one rule.
 
-**Reduce the blast radius instead.** A read-only public deployment with writes
-behind auth is the other shape, but that one *is* a code change — the server
-actions in `web/app/actions.ts` and `web/app/alert-actions.ts` would need a
-guard. Ask if it becomes worth it.
+**Revoking access.** Rotate `AUTH_SECRET` and restart: every session dies. To
+remove one person, delete their row from `users` — their sessions stop working
+immediately, because the session check looks the account up on every request.
 
 ## Known constraints
 
