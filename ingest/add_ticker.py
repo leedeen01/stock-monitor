@@ -19,6 +19,7 @@ from datetime import datetime
 import backfill
 import db
 import derive
+import funds
 import jobs
 import prices
 import run_log
@@ -32,7 +33,17 @@ def add_ticker(conn, ticker: str, group_ids: list[int], user_id: int,
     ticker = ticker.upper()
 
     jobs.set_step(conn, job_id, f"Resolving {ticker} with the SEC registry")
-    backfill.backfill_fundamentals(conn, ticker, verbose=True)
+    is_fund = False
+    try:
+        backfill.backfill_fundamentals(conn, ticker, verbose=True)
+    except KeyError:
+        # Not an SEC filer. Almost always an ETF or a foreign listing — worth
+        # holding, impossible to value from filings. Track the price instead of
+        # refusing the ticker outright.
+        jobs.set_step(conn, job_id, f"{ticker} has no filings — checking for a price")
+        found = funds.register(conn, ticker)
+        is_fund = True
+        print(f"{ticker}: no SEC filings; tracking price as {found['price_symbol']}")
 
     row = conn.execute(
         "SELECT supported, unsupported_reason FROM tickers WHERE ticker = ?",
@@ -47,16 +58,20 @@ def add_ticker(conn, ticker: str, group_ids: list[int], user_id: int,
     prices.backfill_prices(conn, ticker, verbose=False)
 
     jobs.set_step(conn, job_id, "Deriving the daily ratio series")
-    derive.derive_ticker(conn, ticker, verbose=True)
+    if is_fund:
+        derive.derive_fund(conn, ticker, verbose=True)
+    else:
+        derive.derive_ticker(conn, ticker, verbose=True)
 
     # Deliberately non-fatal. Plenty of filers publish no breakdown that
     # reconciles - AMD, Chevron, ExxonMobil among them - and that is a fact
     # about the filer rather than a failure to add the stock.
-    jobs.set_step(conn, job_id, "Looking for a product revenue breakdown")
-    try:
-        segments.backfill_segments(conn, ticker, verbose=False)
-    except Exception as exc:  # noqa: BLE001
-        print(f"segments: skipped - {type(exc).__name__}: {exc}")
+    if not is_fund:
+        jobs.set_step(conn, job_id, "Looking for a product revenue breakdown")
+        try:
+            segments.backfill_segments(conn, ticker, verbose=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"segments: skipped - {type(exc).__name__}: {exc}")
 
     # The ingest registry now knows this ticker; put it on THIS user's list.
     jobs.set_step(conn, job_id, "Assigning groups")

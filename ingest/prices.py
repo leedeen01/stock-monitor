@@ -40,7 +40,14 @@ def backfill_prices(conn: sqlite3.Connection, ticker: str, verbose: bool = True)
     """Pull full available history. Storage is cheap and longer history makes
     percentile bands span more of the cycle, which is the whole point."""
     ticker = ticker.upper()
-    handle = yf.Ticker(ticker)
+    # IBKR and SEC use the local symbol; yfinance wants an exchange suffix for
+    # anything not US-listed. price_symbol holds whichever actually works.
+    row = conn.execute(
+        "SELECT price_symbol FROM tickers WHERE ticker = ?", (ticker,)
+    ).fetchone()
+    symbol = (row["price_symbol"] if row and row["price_symbol"] else ticker)
+
+    handle = yf.Ticker(symbol)
 
     # auto_adjust=False keeps `Close` as the split-adjusted actual closing
     # price. `Adj Close` additionally back-adjusts for dividends, which would

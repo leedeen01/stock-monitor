@@ -316,9 +316,31 @@ def _002_normalise(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user_id, status, id DESC)"
     )
 
+# --- 003 --------------------------------------------------------------------
+
+
+def _003_funds(conn: sqlite3.Connection) -> None:
+    """Allow tickers that have prices but no filings.
+
+    `supported` used to mean 'we can value this'. It now means 'this works in
+    the app at all', and `kind` says how: an equity is valued from filings, a
+    fund is priced only. Splitting the two is what lets an ETF onto a watchlist
+    without pretending it has a P/E.
+
+    `price_symbol` exists because IBKR reports a local symbol while yfinance
+    wants an exchange suffix — SPYL against SPYL.L — and the two are not
+    interchangeable.
+    """
+    _add_column(conn, "tickers", "kind", "TEXT NOT NULL DEFAULT 'equity'")
+    _add_column(conn, "tickers", "price_symbol", "TEXT")
+    conn.execute(
+        "UPDATE tickers SET price_symbol = ticker WHERE price_symbol IS NULL"
+    )
+
 MIGRATIONS: tuple[tuple[int, str, object], ...] = (
     (1, "multi_tenant", _001_multi_tenant),
     (2, "normalise", _002_normalise),
+    (3, "funds", _003_funds),
 )
 
 

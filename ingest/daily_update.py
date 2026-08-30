@@ -135,7 +135,11 @@ def main(job_id: int | None = None) -> int:
 
     jobs.set_step(conn, job_id, "Checking EDGAR for new filings")
     print("\n--- fundamentals ---")
+    _fund_set = {r["ticker"] for r in
+                 conn.execute("SELECT ticker FROM tickers WHERE kind = 'fund'")}
     for ticker in tickers:
+        if ticker in _fund_set:
+            continue          # priced, not filed
         try:
             backfill.backfill_fundamentals(conn, ticker, verbose=True)
         except KeyError:
@@ -187,9 +191,14 @@ def main(job_id: int | None = None) -> int:
         reason += f", new filing ({after_filing})"
     jobs.set_step(conn, job_id, "Recomputing the ratio series")
     print(f"\n--- deriving ({reason}) ---")
+    _kinds = {r["ticker"]: r["kind"] for r in
+              conn.execute("SELECT ticker, COALESCE(kind, 'equity') AS kind FROM tickers")}
     for ticker in tickers:
         try:
-            derive.derive_ticker(conn, ticker, verbose=True)
+            if _kinds.get(ticker) == "fund":
+                derive.derive_fund(conn, ticker, verbose=True)
+            else:
+                derive.derive_ticker(conn, ticker, verbose=True)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{ticker} derive: {type(exc).__name__}: {exc}")
             print(f"{ticker}: FAILED - {exc}")

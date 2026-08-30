@@ -389,6 +389,33 @@ RATIO_COLUMNS = (
 )
 
 
+def derive_fund(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -> dict:
+    """A price-only series, for tickers with no filings behind them.
+
+    Writes the same table as derive_ticker with everything but close left null.
+    That keeps every reader unchanged — the grid, the chart, since-bought — and
+    the metrics simply have no value, which is the truth rather than a gap.
+    """
+    ticker = ticker.upper()
+    price_rows = list(conn.execute(
+        "SELECT date, close FROM prices WHERE ticker = ? ORDER BY date", (ticker,)
+    ))
+    if not price_rows:
+        raise ValueError(f"{ticker}: no prices to derive from")
+
+    conn.execute("DELETE FROM ratios_daily WHERE ticker = ?", (ticker,))
+    conn.executemany(
+        "INSERT INTO ratios_daily (ticker, date, close) VALUES (?, ?, ?)",
+        [(ticker, r["date"], r["close"]) for r in price_rows],
+    )
+    conn.commit()
+
+    if verbose:
+        print(f"{ticker}: {len(price_rows):,} price-only rows "
+              f"({price_rows[0]['date']} -> {price_rows[-1]['date']}), no filings")
+    return {"rows": len(price_rows)}
+
+
 def derive_ticker(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -> dict:
     ticker = ticker.upper()
 

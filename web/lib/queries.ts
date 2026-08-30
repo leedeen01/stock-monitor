@@ -498,12 +498,16 @@ export function getStockDetail(
       bySection.get(a.section)!.push(a.metric_key);
     }
     for (const [section, keys] of bySection) {
-      sections.push({
-        section,
-        metrics: keys
-          .filter(isKnownMetric)
-          .map((k) => metricStats(ticker, k, activeGroup.id)),
-      });
+      // A metric with nothing behind it is hidden rather than shown as a dash.
+      // For a fund that is most of them — an index tracker has no earnings, so
+      // P/E is not missing for it, it does not exist — and a column of dashes
+      // reads as broken rather than as inapplicable.
+      const metrics = keys
+        .filter(isKnownMetric)
+        .map((k) => metricStats(ticker, k, activeGroup.id))
+        .filter((m): m is MetricStats => m !== null && m.value !== null);
+
+      if (metrics.length > 0) sections.push({ section, metrics });
     }
   }
 

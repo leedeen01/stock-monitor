@@ -322,3 +322,59 @@ def test_a_non_sec_symbol_is_ruled_out_not_retried(tmp_path):
     ).fetchone()
     assert held["quantity"] == 100
     conn.close()
+
+
+# --- funds: priced, not valued --------------------------------------------
+
+
+def test_a_fund_gets_a_price_only_series(tmp_path):
+    """No filings, so every metric is null and only close is populated. That is
+    the truth for an index tracker rather than a gap in the data."""
+    import derive
+
+    conn = db.connect(tmp_path / "fund.db")
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO tickers (ticker, name, kind, price_symbol, supported) "
+        "VALUES ('SPYL','S&P 500 UCITS','fund','SPYL.L',1)"
+    )
+    conn.executemany(
+        "INSERT INTO prices (ticker, date, close) VALUES ('SPYL', ?, ?)",
+        [("2026-08-26", 18.98), ("2026-08-27", 19.10)],
+    )
+    conn.commit()
+
+    derive.derive_fund(conn, "SPYL", verbose=False)
+
+    row = conn.execute(
+        "SELECT * FROM ratios_daily WHERE ticker='SPYL' ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    assert row["close"] == 19.10
+    assert row["pe_ttm"] is None and row["revenue_growth_yoy"] is None
+    conn.close()
+
+
+def test_a_qualified_symbol_is_trusted_rather_than_probed(monkeypatch):
+    """Short codes are reused across exchanges for unrelated funds — bare SPYL
+    resolves to an EM Latin America tracker. Passing SPYL.L must not go
+    hunting for alternatives."""
+    import funds
+
+    seen = []
+
+    class FakeTicker:
+        def __init__(self, sym):
+            seen.append(sym)
+            self.sym = sym
+
+        @property
+        def info(self):
+            return {"currency": "USD", "longName": "Fake", "regularMarketPrice": 1.0}
+
+        def history(self, **_):
+            import pandas as pd
+            return pd.DataFrame({"Close": [1.0] * 10})
+
+    monkeypatch.setattr(funds.yf, "Ticker", FakeTicker)
+    assert funds.resolve("SPYL.L")["price_symbol"] == "SPYL.L"
+    assert seen == ["SPYL.L"], f"should not probe alternatives, tried {seen}"

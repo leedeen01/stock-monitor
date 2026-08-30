@@ -20,6 +20,21 @@ from metrics import GETTING, INTEGRITY, LEVERAGE, PAYING
 
 SEED_GROUPS = [
     {
+        "name": "ETFs & Funds",
+        "primary_multiple": "pe_ttm",
+        "description": (
+            "Priced, not valued. An index fund has no income statement, so P/E, "
+            "margins and every percentile in this app are not missing for it — "
+            "they do not exist. What is left is real: price, and what you paid. "
+            "Metrics with no data behind them are hidden rather than shown as "
+            "dashes."
+        ),
+        "metrics": {
+            PAYING: ["pe_ttm"],
+            GETTING: ["revenue_growth_yoy"],
+        },
+    },
+    {
         "name": "Big Tech",
         "primary_multiple": "pe_ttm",
         "description": (
