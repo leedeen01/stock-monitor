@@ -26,6 +26,20 @@ export type StartResult = {
   message: string;
 };
 
+/**
+ * What counts as a ticker symbol.
+ *
+ * Digits are allowed after the first character because SGX codes are mostly
+ * digits - DBS is D05, Mapletree Industrial is ME8U - and a letters-only
+ * pattern silently rejected every Singapore listing. The leading character
+ * stays alphabetic: no exchange we support starts a symbol with a digit, and
+ * it keeps a stray quantity from being submitted as a ticker.
+ *
+ * Dots and hyphens carry share classes and exchange suffixes: BRK.B, RDS-A,
+ * SPYL.L.
+ */
+const TICKER_PATTERN = /^[A-Z][A-Z0-9.\-]{0,9}$/;
+
 export async function addStock(
   _prev: StartResult | null,
   formData: FormData,
@@ -40,7 +54,7 @@ export async function addStock(
     .map((g) => Number(g))
     .filter((n) => Number.isInteger(n) && n > 0);
 
-  if (!/^[A-Z][A-Z.\-]{0,9}$/.test(ticker)) {
+  if (!TICKER_PATTERN.test(ticker)) {
     return { ok: false, message: `"${ticker}" is not a valid ticker symbol.` };
   }
   if (groupIds.length === 0) {
@@ -142,7 +156,7 @@ export async function removeStock(ticker: string): Promise<RemoveStockResult> {
   const user = await requireAction();
 
   const symbol = ticker.trim().toUpperCase();
-  if (!/^[A-Z][A-Z.\-]{0,9}$/.test(symbol)) {
+  if (!TICKER_PATTERN.test(symbol)) {
     return { ok: false, message: "Invalid ticker." };
   }
 
