@@ -22,12 +22,14 @@ def connect(db_path=None) -> sqlite3.Connection:
 
 # Columns added after the initial schema shipped. CREATE TABLE IF NOT EXISTS
 # won't add them to an existing database, so apply them idempotently.
-MIGRATIONS: tuple[tuple[str, str, str], ...] = (
-    ("watchlist", "reporting_currency", "TEXT"),
-    ("watchlist", "adr_ratio", "REAL"),
-    ("watchlist", "supported", "INTEGER NOT NULL DEFAULT 1"),
-    ("watchlist", "unsupported_reason", "TEXT"),
-)
+# Superseded by ingest/migrations.py. Kept empty rather than deleted so the
+# mechanism stays available for a trivial column add.
+#
+# The four entries that used to live here re-added registry columns to
+# `watchlist` on every start, AFTER migration 001 had moved them to `tickers`.
+# The duplicates carried a DEFAULT of 1, so every watchlist row claimed to be
+# supported including the one that is not — wrong data, restored on each boot.
+MIGRATIONS: tuple[tuple[str, str, str], ...] = ()
 
 
 def init_schema(conn: sqlite3.Connection, verbose: bool = False) -> None:

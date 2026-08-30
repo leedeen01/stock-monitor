@@ -32,18 +32,36 @@ export function expireStaleJobs(): void {
     .run(new Date().toISOString(), cutoff);
 }
 
-export function jobRunning(kind: JobKind, target?: string | null): boolean {
-  const conn = db();
-  const row = target
-    ? conn
-        .prepare(
-          "SELECT id FROM jobs WHERE kind = ? AND target = ? AND status = 'running'",
-        )
-        .get(kind, target)
-    : conn
-        .prepare("SELECT id FROM jobs WHERE kind = ? AND status = 'running'")
-        .get(kind);
-  return Boolean(row);
+/**
+ * Is a job of this kind already in flight?
+ *
+ * `userId` scopes the question. Omitting it asks globally, which is right for
+ * a refresh — that rewrites ratios_daily for every ticker, so two at once
+ * would fight regardless of who started them. It is wrong for an add: without
+ * the scope, one account adding NVDA blocks every other account from adding
+ * NVDA, which is not a conflict at all since watchlists are per-user.
+ */
+export function jobRunning(
+  kind: JobKind,
+  options: { userId?: number; target?: string | null } = {},
+): boolean {
+  const clauses = ["kind = ?", "status = 'running'"];
+  const args: (string | number)[] = [kind];
+
+  if (options.target != null) {
+    clauses.push("target = ?");
+    args.push(options.target);
+  }
+  if (options.userId != null) {
+    clauses.push("user_id = ?");
+    args.push(options.userId);
+  }
+
+  return Boolean(
+    db()
+      .prepare(`SELECT id FROM jobs WHERE ${clauses.join(" AND ")}`)
+      .get(...args),
+  );
 }
 
 /**
@@ -58,15 +76,24 @@ export function startJob(options: {
   script: string;
   args: string[];
   kind: JobKind;
+  /** Whoever started it. /api/jobs will only report a job to its owner. */
+  userId: number;
   target?: string | null;
   firstStep: string;
   env?: Record<string, string>;
 }): number {
   const info = db()
     .prepare(
-      "INSERT INTO jobs (kind, target, status, step, started_at) VALUES (?, ?, 'running', ?, ?)",
+      "INSERT INTO jobs (kind, target, user_id, status, step, started_at) " +
+        "VALUES (?, ?, ?, 'running', ?, ?)",
     )
-    .run(options.kind, options.target ?? null, options.firstStep, new Date().toISOString());
+    .run(
+      options.kind,
+      options.target ?? null,
+      options.userId,
+      options.firstStep,
+      new Date().toISOString(),
+    );
 
   const jobId = Number(info.lastInsertRowid);
 

@@ -30,7 +30,8 @@ const COLUMNS =
 export async function GET(request: Request) {
   // A route handler is reachable without ever loading a page, so it carries
   // its own check. 401 rather than a redirect: this is fetched by script.
-  if (!(await requireApi())) {
+  const user = await requireApi();
+  if (!user) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }
 
@@ -38,16 +39,20 @@ export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get("id");
 
   if (id) {
+    // Scoped to the caller: a job id is a small integer, so without this any
+    // signed-in account could read another account's job by guessing.
     const job = conn
-      .prepare(`SELECT ${COLUMNS} FROM jobs WHERE id = ?`)
-      .get(Number(id)) as JobRow | undefined;
+      .prepare(`SELECT ${COLUMNS} FROM jobs WHERE id = ? AND user_id = ?`)
+      .get(Number(id), user.id) as JobRow | undefined;
     return NextResponse.json({ job: job ?? null });
   }
 
   // No id: whatever is currently running, so a freshly loaded page can adopt a
   // job started by another tab.
   const jobs = conn
-    .prepare(`SELECT ${COLUMNS} FROM jobs WHERE status = 'running' ORDER BY id DESC`)
-    .all() as JobRow[];
+    .prepare(
+      `SELECT ${COLUMNS} FROM jobs WHERE status = 'running' AND user_id = ? ORDER BY id DESC`,
+    )
+    .all(user.id) as JobRow[];
   return NextResponse.json({ jobs });
 }

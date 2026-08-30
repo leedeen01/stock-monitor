@@ -183,8 +183,142 @@ def _001_multi_tenant(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 002 --------------------------------------------------------------------
+
+
+def _002_normalise(conn: sqlite3.Connection) -> None:
+    """Remove duplicated and misplaced columns, and give jobs an owner.
+
+    Three separate problems, all found by asking whether the schema is in 3NF:
+
+    1. `watchlist` still carried reporting_currency, adr_ratio, supported and
+       unsupported_reason. Migration 001 moved those to `tickers`, but the
+       legacy additive migrations in db.py re-added them on every start — with
+       supported defaulting to 1, so every watchlist row claimed support
+       including the one ticker that has none. Duplicated AND wrong.
+
+    2. `holdings` and `ibkr_trades` stored conid and asset_class per row. Both
+       describe the instrument, not the holding, so they depended on ticker
+       rather than on the whole key — a partial dependency, and one that
+       repeats the same conid once per position per day forever.
+
+    3. `jobs` had no user_id, so /api/jobs could hand any signed-in account
+       another account's job. Not a normalisation issue but found in the same
+       pass, and fixed here because it is the same table rebuild.
+    """
+    # 1. Drop the resurrected duplicates.
+    if "supported" in _columns(conn, "watchlist"):
+        conn.execute(
+            """
+            CREATE TABLE watchlist_clean (
+                user_id          INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                ticker           TEXT NOT NULL REFERENCES tickers(ticker),
+                added_at         TEXT NOT NULL,
+                added_price      REAL,
+                default_group_id INTEGER REFERENCES metric_groups(id),
+                UNIQUE (user_id, ticker)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO watchlist_clean (user_id, ticker, added_at, added_price, "
+            "default_group_id) SELECT user_id, ticker, added_at, added_price, "
+            "default_group_id FROM watchlist"
+        )
+        conn.execute("DROP TABLE watchlist")
+        conn.execute("ALTER TABLE watchlist_clean RENAME TO watchlist")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist (user_id)"
+        )
+
+    # 2. Instrument attributes move to the instrument.
+    _add_column(conn, "tickers", "ibkr_conid", "TEXT")
+    _add_column(conn, "tickers", "asset_class", "TEXT")
+
+    # Rebuilt with explicit definitions, not CREATE TABLE AS SELECT: that form
+    # copies the data and silently drops the primary key, and holdings depends
+    # on its key for the ON CONFLICT that makes a re-sync idempotent. Losing it
+    # would duplicate every position on the second run and look like nothing at
+    # all until the numbers doubled.
+    REBUILT = {
+        "holdings": (
+            """
+            CREATE TABLE holdings_clean (
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                report_date      TEXT NOT NULL,
+                ticker           TEXT NOT NULL,
+                currency         TEXT,
+                quantity         REAL,
+                cost_basis_price REAL,
+                cost_basis_money REAL,
+                mark_price       REAL,
+                position_value   REAL,
+                unrealized_pnl   REAL,
+                percent_of_nav   REAL,
+                PRIMARY KEY (user_id, report_date, ticker)
+            )
+            """,
+            "user_id, report_date, ticker, currency, quantity, cost_basis_price, "
+            "cost_basis_money, mark_price, position_value, unrealized_pnl, percent_of_nav",
+        ),
+        "ibkr_trades": (
+            """
+            CREATE TABLE ibkr_trades_clean (
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                trade_id     TEXT NOT NULL,
+                ticker       TEXT,
+                currency     TEXT,
+                trade_date   TEXT,
+                buy_sell     TEXT,
+                quantity     REAL,
+                price        REAL,
+                commission   REAL,
+                net_cash     REAL,
+                open_close   TEXT,
+                cost_basis   REAL,
+                realized_pnl REAL,
+                PRIMARY KEY (user_id, trade_id)
+            )
+            """,
+            "user_id, trade_id, ticker, currency, trade_date, buy_sell, quantity, "
+            "price, commission, net_cash, open_close, cost_basis, realized_pnl",
+        ),
+    }
+
+    for table, (create_sql, columns) in REBUILT.items():
+        if "conid" not in _columns(conn, table):
+            continue
+        # Keep any conid already collected before the column goes.
+        conn.execute(
+            "UPDATE tickers SET ibkr_conid = COALESCE(ibkr_conid, ("
+            f"  SELECT conid FROM {table} t WHERE t.ticker = tickers.ticker "
+            "   AND t.conid IS NOT NULL LIMIT 1))"
+        )
+        conn.execute(create_sql)
+        conn.execute(
+            f"INSERT INTO {table}_clean ({columns}) SELECT {columns} FROM {table}"
+        )
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}_clean RENAME TO {table}")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_holdings_latest "
+        "ON holdings (user_id, report_date DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ibkr_trades_ticker "
+        "ON ibkr_trades (user_id, ticker, trade_date)"
+    )
+
+    # 3. A job belongs to whoever started it.
+    _add_column(conn, "jobs", "user_id", "INTEGER REFERENCES users(id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user_id, status, id DESC)"
+    )
+
 MIGRATIONS: tuple[tuple[int, str, object], ...] = (
     (1, "multi_tenant", _001_multi_tenant),
+    (2, "normalise", _002_normalise),
 )
 
 

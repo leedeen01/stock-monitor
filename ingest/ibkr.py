@@ -253,12 +253,27 @@ def store(conn: sqlite3.Connection, user_id: int, parsed: dict) -> dict[str, int
     rather than a duplication, which is what makes a daily job safe."""
     counts = {}
 
+    # conid and asset class describe the instrument, not the holding, so they
+    # live on `tickers` rather than being repeated once per position per day.
+    # A held symbol we have never ingested still earns a registry row here —
+    # that is what lets the daily job discover it and fetch its filings.
     conn.executemany(
         """
-        INSERT INTO holdings (user_id, report_date, ticker, conid, asset_class,
+        INSERT INTO tickers (ticker, ibkr_conid, asset_class, first_seen_at)
+        VALUES (:ticker, :conid, :asset_class, datetime('now'))
+        ON CONFLICT(ticker) DO UPDATE SET
+            ibkr_conid = COALESCE(excluded.ibkr_conid, tickers.ibkr_conid),
+            asset_class = COALESCE(excluded.asset_class, tickers.asset_class)
+        """,
+        [p for p in parsed["positions"] if p["ticker"]],
+    )
+
+    conn.executemany(
+        """
+        INSERT INTO holdings (user_id, report_date, ticker,
             currency, quantity, cost_basis_price, cost_basis_money, mark_price,
             position_value, unrealized_pnl, percent_of_nav)
-        VALUES (:user_id, :report_date, :ticker, :conid, :asset_class,
+        VALUES (:user_id, :report_date, :ticker,
             :currency, :quantity, :cost_basis_price, :cost_basis_money,
             :mark_price, :position_value, :unrealized_pnl, :percent_of_nav)
         ON CONFLICT(user_id, report_date, ticker) DO UPDATE SET
@@ -276,10 +291,10 @@ def store(conn: sqlite3.Connection, user_id: int, parsed: dict) -> dict[str, int
 
     conn.executemany(
         """
-        INSERT INTO ibkr_trades (user_id, trade_id, ticker, conid, asset_class,
+        INSERT INTO ibkr_trades (user_id, trade_id, ticker,
             currency, trade_date, buy_sell, quantity, price, commission,
             net_cash, open_close, cost_basis, realized_pnl)
-        VALUES (:user_id, :trade_id, :ticker, :conid, :asset_class, :currency,
+        VALUES (:user_id, :trade_id, :ticker, :currency,
             :trade_date, :buy_sell, :quantity, :price, :commission, :net_cash,
             :open_close, :cost_basis, :realized_pnl)
         ON CONFLICT(user_id, trade_id) DO NOTHING
@@ -344,7 +359,7 @@ def unmatched_tickers(conn, user_id: int) -> list[str]:
             """
             SELECT DISTINCT h.ticker FROM holdings h
             LEFT JOIN tickers t ON t.ticker = h.ticker
-            WHERE h.user_id = ? AND t.ticker IS NULL
+            WHERE h.user_id = ? AND t.cik IS NULL
               AND h.report_date = (SELECT MAX(report_date) FROM holdings WHERE user_id = ?)
             ORDER BY h.ticker
             """,

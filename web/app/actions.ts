@@ -57,7 +57,7 @@ export async function addStock(
     return { ok: false, message: `${ticker} is already on your watchlist.` };
   }
 
-  if (jobRunning("add", ticker)) {
+  if (jobRunning("add", { userId: user.id, target: ticker })) {
     return { ok: false, message: `${ticker} is already being added.` };
   }
 
@@ -65,6 +65,7 @@ export async function addStock(
     script: "add_ticker.py",
     args: [ticker, "--groups", groupIds.join(","), "--user-id", String(user.id)],
     kind: "add",
+    userId: user.id,
     target: ticker,
     firstStep: `Starting ${ticker}`,
   });
@@ -73,7 +74,7 @@ export async function addStock(
 }
 
 export async function refreshNow(): Promise<StartResult> {
-  await requireAction();
+  const user = await requireAction();
 
   const conn = db();
   expireStaleJobs();
@@ -103,6 +104,7 @@ export async function refreshNow(): Promise<StartResult> {
     script: "daily_update.py",
     args: [],
     kind: "refresh",
+    userId: user.id,
     firstStep: "Starting",
   });
   return { ok: true, jobId, message: "Refresh started." };

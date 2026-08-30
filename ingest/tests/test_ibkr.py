@@ -128,20 +128,49 @@ def test_holdings_are_scoped_to_their_user(tmp_path):
     conn.close()
 
 
-def test_unwatched_symbols_are_reported_not_dropped(tmp_path):
-    """You can hold something you never added to a watchlist. It should still be
-    stored, and named, rather than silently vanishing."""
+def test_holding_something_unresearched_registers_it_and_says_so(tmp_path):
+    """You can hold what you never researched.
+
+    Every held symbol earns a registry row, which is what lets the daily job
+    discover it and fetch its filings. Until that happens it has no CIK and so
+    no valuation history, and the sync reports it rather than leaving a row of
+    blanks with no explanation.
+    """
     conn = db.connect(tmp_path / "unmatched.db")
     db.init_schema(conn)
     seed_user(conn)
-    conn.execute("INSERT INTO tickers (ticker, name, supported) VALUES ('AAPL','Apple',1)")
+    # AAPL is already ingested; a CIK is what says so.
+    conn.execute(
+        "INSERT INTO tickers (ticker, name, cik, supported) VALUES ('AAPL','Apple',320193,1)")
     conn.commit()
 
     other = POSITION.replace('symbol="AAPL"', 'symbol="TSLA"')
     ibkr.store(conn, 1, ibkr.parse(_statement(positions=POSITION + other)))
 
     assert conn.execute("SELECT COUNT(*) FROM holdings").fetchone()[0] == 2
+    # TSLA is now in the registry, so tomorrow's run will ingest it...
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tickers WHERE ticker = 'TSLA'").fetchone()[0] == 1
+    # ...but has no filings yet, so it is reported as lacking history.
     assert ibkr.unmatched_tickers(conn, 1) == ["TSLA"]
+    conn.close()
+
+
+def test_conid_is_stored_once_on_the_instrument(tmp_path):
+    """Not once per position per day — it describes the instrument."""
+    conn = db.connect(tmp_path / "conid.db")
+    db.init_schema(conn)
+    seed_user(conn)
+
+    ibkr.store(conn, 1, ibkr.parse(_statement(positions=POSITION)))
+    later = POSITION.replace('reportDate="20260828"', 'reportDate="20260829"')
+    ibkr.store(conn, 1, ibkr.parse(_statement(positions=later)))
+
+    assert conn.execute("SELECT COUNT(*) FROM holdings").fetchone()[0] == 2
+    assert conn.execute(
+        "SELECT ibkr_conid FROM tickers WHERE ticker='AAPL'").fetchone()[0] == "265598"
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(holdings)")]
+    assert "conid" not in cols, "instrument attributes must not repeat per row"
     conn.close()
 
 

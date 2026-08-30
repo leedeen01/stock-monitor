@@ -27,7 +27,7 @@ export async function syncIbkr(): Promise<StartResult> {
       message: "The stored token cannot be decrypted — re-enter it to relink.",
     };
   }
-  if (jobRunning("ibkr", String(user.id))) {
+  if (jobRunning("ibkr", { userId: user.id })) {
     return { ok: false, message: "A sync is already running." };
   }
 
@@ -40,6 +40,7 @@ export async function syncIbkr(): Promise<StartResult> {
     script: "ibkr.py",
     args: ["--user-id", String(user.id)],
     kind: "ibkr",
+    userId: user.id,
     // Scoped to the user so two accounts can sync at once without one
     // reporting the other's progress.
     target: String(user.id),
