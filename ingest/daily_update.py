@@ -31,6 +31,7 @@ import db
 import derive
 import ibkr
 import jobs
+import pipeline
 import prices
 import run_log
 import segments
@@ -135,13 +136,12 @@ def main(job_id: int | None = None) -> int:
 
     jobs.set_step(conn, job_id, "Checking EDGAR for new filings")
     print("\n--- fundamentals ---")
-    _fund_set = {r["ticker"] for r in
-                 conn.execute("SELECT ticker FROM tickers WHERE kind = 'fund'")}
     for ticker in tickers:
-        if ticker in _fund_set:
-            continue          # priced, not filed
         try:
-            backfill.backfill_fundamentals(conn, ticker, verbose=True)
+            # Routed by market: EDGAR for US, yfinance for SGX, nothing for a
+            # fund. Adding a market never touches this loop.
+            if pipeline.ingest_fundamentals(conn, ticker, verbose=True) == "none":
+                continue
         except KeyError:
             # Not in the SEC registry. Almost always a non-US ETF or fund
             # arriving from the brokerage — real to hold, impossible to value
@@ -191,14 +191,9 @@ def main(job_id: int | None = None) -> int:
         reason += f", new filing ({after_filing})"
     jobs.set_step(conn, job_id, "Recomputing the ratio series")
     print(f"\n--- deriving ({reason}) ---")
-    _kinds = {r["ticker"]: r["kind"] for r in
-              conn.execute("SELECT ticker, COALESCE(kind, 'equity') AS kind FROM tickers")}
     for ticker in tickers:
         try:
-            if _kinds.get(ticker) == "fund":
-                derive.derive_fund(conn, ticker, verbose=True)
-            else:
-                derive.derive_ticker(conn, ticker, verbose=True)
+            pipeline.derive_for(conn, ticker, verbose=True)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{ticker} derive: {type(exc).__name__}: {exc}")
             print(f"{ticker}: FAILED - {exc}")

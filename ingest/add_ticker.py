@@ -21,6 +21,8 @@ import db
 import derive
 import funds
 import jobs
+import markets
+import pipeline
 import prices
 import run_log
 import segments
@@ -29,28 +31,50 @@ import segments
 
 
 def add_ticker(conn, ticker: str, group_ids: list[int], user_id: int,
+               market_code: str = markets.DEFAULT_MARKET,
                job_id: int | None = None) -> dict:
     ticker = ticker.upper()
 
-    jobs.set_step(conn, job_id, f"Resolving {ticker} with the SEC registry")
-    is_fund = False
-    try:
-        backfill.backfill_fundamentals(conn, ticker, verbose=True)
-    except KeyError:
-        # Not an SEC filer. Almost always an ETF or a foreign listing — worth
-        # holding, impossible to value from filings. Track the price instead of
-        # refusing the ticker outright.
-        jobs.set_step(conn, job_id, f"{ticker} has no filings — checking for a price")
-        found = funds.register(conn, ticker)
-        is_fund = True
-        print(f"{ticker}: no SEC filings; tracking price as {found['price_symbol']}")
+    market = markets.get(market_code)
+    jobs.set_step(conn, job_id, f"Resolving {ticker} on {market.label}")
+
+    if market.fundamentals == "edgar":
+        try:
+            provider = pipeline.ingest_fundamentals(conn, ticker, market.code, verbose=True)
+        except KeyError:
+            # Not an SEC filer. Almost always an ETF or a foreign listing —
+            # worth holding, impossible to value from filings. Track the price.
+            jobs.set_step(conn, job_id, f"{ticker} has no filings — checking for a price")
+            found = funds.register(conn, ticker)
+            provider = "none"
+            print(f"{ticker}: no SEC filings; tracking price as {found['price_symbol']}")
+    else:
+        # A market with its own provider, or none at all. Register the ticker
+        # first so the provider knows which symbol and currency to use.
+        conn.execute(
+            """
+            INSERT INTO tickers (ticker, market, quote_currency, price_symbol,
+                                 supported, first_seen_at)
+            VALUES (?, ?, ?, ?, 1, datetime('now'))
+            ON CONFLICT(ticker) DO UPDATE SET
+                market = excluded.market,
+                quote_currency = COALESCE(tickers.quote_currency, excluded.quote_currency),
+                price_symbol = COALESCE(tickers.price_symbol, excluded.price_symbol)
+            """,
+            (ticker, market.code, market.currency,
+             markets.price_symbol(ticker, market.code)),
+        )
+        conn.commit()
+        provider = pipeline.ingest_fundamentals(conn, ticker, market.code, verbose=True)
+        if provider == "none":
+            funds.register(conn, ticker)
 
     row = conn.execute(
         "SELECT supported, unsupported_reason FROM tickers WHERE ticker = ?",
         (ticker,),
     ).fetchone()
     if row is None:
-        raise RuntimeError(f"{ticker} was not found in the SEC registry")
+        raise RuntimeError(f"{ticker} could not be registered")
     if not row["supported"]:
         raise RuntimeError(f"{ticker} cannot be tracked: {row['unsupported_reason']}")
 
@@ -58,15 +82,12 @@ def add_ticker(conn, ticker: str, group_ids: list[int], user_id: int,
     prices.backfill_prices(conn, ticker, verbose=False)
 
     jobs.set_step(conn, job_id, "Deriving the daily ratio series")
-    if is_fund:
-        derive.derive_fund(conn, ticker, verbose=True)
-    else:
-        derive.derive_ticker(conn, ticker, verbose=True)
+    pipeline.derive_for(conn, ticker, verbose=True)
 
     # Deliberately non-fatal. Plenty of filers publish no breakdown that
     # reconciles - AMD, Chevron, ExxonMobil among them - and that is a fact
     # about the filer rather than a failure to add the stock.
-    if not is_fund:
+    if provider == "edgar":
         jobs.set_step(conn, job_id, "Looking for a product revenue breakdown")
         try:
             segments.backfill_segments(conn, ticker, verbose=False)
@@ -121,6 +142,9 @@ def main() -> int:
     parser.add_argument("ticker")
     parser.add_argument("--groups", default="",
                         help="Comma-separated metric_groups ids")
+    parser.add_argument("--market", default=markets.DEFAULT_MARKET,
+                        choices=markets.codes(),
+                        help="Which market the ticker trades on")
     parser.add_argument("--user-id", type=int, required=True,
                         help="Whose watchlist this is added to")
     parser.add_argument("--job-id", type=int, default=None)
@@ -131,7 +155,8 @@ def main() -> int:
     conn = db.connect()
     db.init_schema(conn)
     try:
-        result = add_ticker(conn, args.ticker, group_ids, args.user_id, args.job_id)
+        result = add_ticker(conn, args.ticker, group_ids, args.user_id,
+                            args.market, args.job_id)
     except Exception as exc:  # noqa: BLE001 - the message is the UI's error text
         traceback.print_exc()
         # The message goes straight to the UI, so lead with what happened

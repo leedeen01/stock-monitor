@@ -53,9 +53,13 @@ def ensure_ticker(conn: sqlite3.Connection, ticker: str, name: str, cik: int) ->
     ticker is a separate, per-user question."""
     conn.execute(
         """
-        INSERT INTO tickers (ticker, name, cik, first_seen_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(ticker) DO UPDATE SET name = excluded.name, cik = excluded.cik
+        INSERT INTO tickers (ticker, name, cik, market, quote_currency, first_seen_at)
+        VALUES (?, ?, ?, 'US', 'USD', ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            name = excluded.name,
+            cik = excluded.cik,
+            market = COALESCE(tickers.market, 'US'),
+            quote_currency = COALESCE(tickers.quote_currency, 'USD')
         """,
         (ticker.upper(), name, cik, _now()),
     )

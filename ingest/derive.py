@@ -307,7 +307,8 @@ def reconcile_shares(
     return max(values.values())
 
 
-def compute_ratios(state: dict, close: float) -> dict:
+def compute_ratios(state: dict, close: float,
+                   ttm_dividend: float | None = None) -> dict:
     """Turn a financial state plus a price into the row the UI reads.
 
     `shares_final` is set by the chronological pass in derive_ticker, which is
@@ -360,6 +361,7 @@ def compute_ratios(state: dict, close: float) -> dict:
         ),
         "sbc_pct_revenue": _safe_div(state.get("stock_based_compensation"), revenue, guard_positive=True),
         "capex_pct_revenue": _safe_div(state.get("capex"), revenue, guard_positive=True),
+        "dividend_yield": _safe_div(ttm_dividend, close, guard_positive=True),
         "fundamentals_filed_at": state.get("filed_at"),
     }
 
@@ -385,7 +387,7 @@ RATIO_COLUMNS = (
     "earnings_yield", "gross_margin", "operating_margin", "net_margin", "fcf_margin",
     "fcf_conversion", "roic", "roe", "net_debt", "net_debt_ebitda", "interest_coverage",
     "revenue_ttm", "revenue_growth_yoy", "inventory_days", "sbc_pct_revenue",
-    "capex_pct_revenue", "fundamentals_filed_at",
+    "capex_pct_revenue", "dividend_yield", "fundamentals_filed_at",
 )
 
 
@@ -416,6 +418,40 @@ def derive_fund(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -> 
     return {"rows": len(price_rows)}
 
 
+def trailing_dividends(conn, ticker: str, splits) -> dict[str, float]:
+    """Trailing twelve-month dividends per share, for every payment date.
+
+    Split-adjusted, and that adjustment is the whole point. Prices are stored
+    split-adjusted; dividends are stored as paid. Dividing an unadjusted
+    payment by an adjusted price overstates the yield by exactly the split
+    factor — a 4:1 split turns a 0.5% yield into 2%, which looks like a
+    perfectly plausible income stock. This is the same failure that produced
+    the share-count bugs, arriving from the other side.
+
+    Returns a sparse map of date -> TTM per share; callers carry the last known
+    value forward, since the figure only changes when a payment happens or one
+    rolls out of the window.
+    """
+    from datetime import date, timedelta
+
+    payments = [
+        (r["date"], r["amount"] / prices_mod.split_factor(splits, r["date"]))
+        for r in conn.execute(
+            "SELECT date, amount FROM dividends WHERE ticker = ? ORDER BY date",
+            (ticker,),
+        )
+        if r["amount"]
+    ]
+    if not payments:
+        return {}
+
+    out: dict[str, float] = {}
+    for i, (day, _) in enumerate(payments):
+        cutoff = (date.fromisoformat(day) - timedelta(days=365)).isoformat()
+        out[day] = sum(a for d, a in payments[: i + 1] if d > cutoff)
+    return out
+
+
 def derive_ticker(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -> dict:
     ticker = ticker.upper()
 
@@ -430,6 +466,8 @@ def derive_ticker(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -
         raise ValueError(f"{ticker}: need both fundamentals and prices (have {len(rows)}/{len(price_rows)})")
 
     splits = prices_mod.load_splits(conn, ticker)
+    dividend_points = trailing_dividends(conn, ticker, splits)
+    ttm_dividend: float | None = None
 
     # One state per filing date — the only dates on which the picture changes.
     filing_dates = sorted({r["filed_at"] for r in rows})
@@ -454,7 +492,9 @@ def derive_ticker(conn: sqlite3.Connection, ticker: str, verbose: bool = True) -
             continue  # nothing was knowable yet
         while state_idx + 1 < len(states) and states[state_idx + 1][0] <= day:
             state_idx += 1
-        ratios = compute_ratios(states[state_idx][1], close)
+        if day in dividend_points:
+            ttm_dividend = dividend_points[day]
+        ratios = compute_ratios(states[state_idx][1], close, ttm_dividend)
         out.append({"ticker": ticker, "date": day, **ratios})
 
     _fill_revenue_growth(out)

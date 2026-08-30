@@ -22,6 +22,24 @@ SUFFIXES = ("", ".L", ".AS", ".DE", ".SW", ".PA", ".MI")
 
 BASE_CURRENCY = "USD"
 
+# yfinance reports an exchange code; this is the market people call it by.
+# Unknown codes pass through unchanged rather than being forced into a bucket —
+# a wrong label is worse than an unfamiliar one.
+MARKETS = {
+    "NMS": "US", "NYQ": "US", "NGM": "US", "NCM": "US",
+    "ASE": "US", "PCX": "US", "BTS": "US", "PNK": "US",
+    "LSE": "LSE", "AMS": "AMS", "GER": "XETRA", "PAR": "PAR",
+    "MIL": "MIL", "EBS": "SWX", "SES": "SGX", "HKG": "HKEX",
+    "TOR": "TSX", "ASX": "ASX", "JPX": "TSE",
+}
+
+
+def market_of(exchange: str | None) -> str | None:
+    if not exchange:
+        return None
+    return MARKETS.get(exchange.upper(), exchange.upper())
+
+
 
 class NotPriceable(RuntimeError):
     """No usable USD listing, phrased for a human."""
@@ -75,6 +93,7 @@ def resolve(symbol: str) -> dict:
             "currency": currency,
             "quote_type": (info.get("quoteType") or "").upper(),
             "exchange": info.get("exchange"),
+            "market": market_of(info.get("exchange")),
         }
 
     raise NotPriceable(
@@ -90,18 +109,20 @@ def register(conn, symbol: str) -> dict:
     conn.execute(
         """
         INSERT INTO tickers
-            (ticker, name, kind, price_symbol, reporting_currency,
+            (ticker, name, kind, price_symbol, quote_currency, market,
              supported, unsupported_reason, first_seen_at)
-        VALUES (?, ?, 'fund', ?, ?, 1, NULL, datetime('now'))
+        VALUES (?, ?, 'fund', ?, ?, ?, 1, NULL, datetime('now'))
         ON CONFLICT(ticker) DO UPDATE SET
             name = excluded.name,
             kind = 'fund',
             price_symbol = excluded.price_symbol,
-            reporting_currency = excluded.reporting_currency,
+            quote_currency = excluded.quote_currency,
+            market = excluded.market,
             supported = 1,
             unsupported_reason = NULL
         """,
-        (symbol.strip().upper(), found["name"], found["price_symbol"], found["currency"]),
+        (symbol.strip().upper(), found["name"], found["price_symbol"],
+         found["currency"], found["market"]),
     )
     conn.commit()
     return found

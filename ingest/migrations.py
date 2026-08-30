@@ -337,10 +337,60 @@ def _003_funds(conn: sqlite3.Connection) -> None:
         "UPDATE tickers SET price_symbol = ticker WHERE price_symbol IS NULL"
     )
 
+# --- 004 --------------------------------------------------------------------
+
+
+def _004_markets(conn: sqlite3.Connection) -> None:
+    """Record which market a ticker trades on, and in what currency.
+
+    Deliberately separate from `reporting_currency`, which is the currency a
+    company FILES in. A stock can file in one and trade in another, and a fund
+    files in none at all — SPYL trades in USD on the LSE and in EUR in
+    Amsterdam while reporting nothing anywhere.
+
+    Nothing is converted. The currency is carried so it can be shown beside the
+    number: a price in SGD displayed as though it were dollars is worse than no
+    price, and converting would need historical rates on every derived figure.
+    """
+    _add_column(conn, "tickers", "market", "TEXT")
+    _add_column(conn, "tickers", "quote_currency", "TEXT")
+
+    # Everything ingested before this arrived through the SEC path, which only
+    # accepts US-listed USD filers.
+    conn.execute(
+        "UPDATE tickers SET market = 'US' WHERE market IS NULL AND cik IS NOT NULL"
+    )
+    conn.execute(
+        "UPDATE tickers SET quote_currency = 'USD' WHERE quote_currency IS NULL "
+        "AND cik IS NOT NULL"
+    )
+
+# --- 005 --------------------------------------------------------------------
+
+
+def _005_yield_and_group_markets(conn: sqlite3.Connection) -> None:
+    """Trailing dividend yield, and groups that belong to a market.
+
+    Dividends have been ingested since the beginning and used by nothing. For
+    REITs and income names — most of what is worth holding on SGX — yield is
+    the metric, so it finally earns its column.
+
+    Groups gain a market because a REIT profile has no business appearing when
+    adding a US stock, and because a change to the Singapore set must not touch
+    the US one.
+    """
+    _add_column(conn, "ratios_daily", "dividend_yield", "REAL")
+    _add_column(conn, "metric_groups", "market", "TEXT")
+
+    # Everything seeded before this was for US listings.
+    conn.execute("UPDATE metric_groups SET market = 'US' WHERE market IS NULL")
+
 MIGRATIONS: tuple[tuple[int, str, object], ...] = (
     (1, "multi_tenant", _001_multi_tenant),
     (2, "normalise", _002_normalise),
     (3, "funds", _003_funds),
+    (4, "markets", _004_markets),
+    (5, "yield_and_group_markets", _005_yield_and_group_markets),
 )
 
 

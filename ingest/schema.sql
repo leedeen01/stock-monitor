@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS ratios_daily (
     inventory_days        REAL,
     sbc_pct_revenue       REAL,
     capex_pct_revenue     REAL,
+    dividend_yield        REAL,
     fundamentals_filed_at TEXT,
     PRIMARY KEY (ticker, date)
 );

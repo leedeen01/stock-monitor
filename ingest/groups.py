@@ -19,8 +19,77 @@ import metrics
 from metrics import GETTING, INTEGRITY, LEVERAGE, PAYING
 
 SEED_GROUPS = [
+    # --- SGX ---------------------------------------------------------------
+    # Separate profiles because the questions differ. A REIT is judged on
+    # distribution and gearing, a bank on book value and return on equity, and
+    # neither has a meaningful gross margin. Metrics with nothing behind them
+    # are hidden rather than shown empty, so a sparse profile costs nothing.
+    {
+        "name": "REITs",
+        "market": "SGX",
+        "primary_multiple": "dividend_yield",
+        "description": (
+            "Bought for the distribution, undone by the gearing. Yield leads, but "
+            "read it beside interest coverage and Net Debt/EBITDA: a payout funded "
+            "by borrowing lasts exactly as long as the borrowing does. P/B matters "
+            "because a REIT is a pile of buildings — earnings multiples do not "
+            "describe it."
+        ),
+        "metrics": {
+            PAYING: ["dividend_yield", "pb", "fcf_yield"],
+            GETTING: ["revenue_growth_yoy", "net_margin", "roe"],
+            LEVERAGE: ["net_debt_ebitda", "interest_coverage", "net_debt"],
+        },
+    },
+    {
+        "name": "Banks",
+        "market": "SGX",
+        "primary_multiple": "pb",
+        "description": (
+            "P/B leads, because for a bank book value approximates what it owns and "
+            "below 1.0 means the market doubts the stated asset values. ROE is the "
+            "industry's own yardstick and the one place this app's usual preference "
+            "for ROIC does not apply. Gross and operating margin are absent by "
+            "nature, not by omission."
+        ),
+        "metrics": {
+            PAYING: ["pb", "pe_ttm", "dividend_yield"],
+            GETTING: ["roe", "net_margin", "revenue_growth_yoy"],
+        },
+    },
+    {
+        "name": "Dividend",
+        "market": "SGX",
+        "primary_multiple": "dividend_yield",
+        "description": (
+            "Income names outside the REIT structure. The trap is the same: a yield "
+            "that rose because the price fell is not the same as one that rose "
+            "because the payout grew, and only cash conversion tells you which."
+        ),
+        "metrics": {
+            PAYING: ["dividend_yield", "fcf_yield", "pe_ttm"],
+            GETTING: ["revenue_growth_yoy", "fcf_margin", "fcf_conversion", "roe"],
+            LEVERAGE: ["net_debt_ebitda", "interest_coverage"],
+        },
+    },
+    {
+        "name": "Others",
+        "market": "SGX",
+        "primary_multiple": "pe_ttm",
+        "description": (
+            "Everything else on SGX. A general profile, deliberately broad — "
+            "fundamentals here come from yfinance with roughly five annual periods, "
+            "so percentile bands are shorter than their US equivalents and say so."
+        ),
+        "metrics": {
+            PAYING: ["pe_ttm", "ev_ebitda", "pb", "dividend_yield"],
+            GETTING: ["revenue_growth_yoy", "operating_margin", "net_margin", "roe"],
+            LEVERAGE: ["net_debt_ebitda", "interest_coverage"],
+        },
+    },
     {
         "name": "ETFs & Funds",
+        "market": "US",
         "primary_multiple": "pe_ttm",
         "description": (
             "Priced, not valued. An index fund has no income statement, so P/E, "
@@ -36,6 +105,7 @@ SEED_GROUPS = [
     },
     {
         "name": "Big Tech",
+        "market": "US",
         "primary_multiple": "pe_ttm",
         "description": (
             "Mature, profitable, net cash, buyback-heavy. Earnings are reliable so P/E "
@@ -51,6 +121,7 @@ SEED_GROUPS = [
     },
     {
         "name": "AI / High Growth",
+        "market": "US",
         "primary_multiple": "ev_sales",
         "description": (
             "Often unprofitable, so P/E and PEG are dropped entirely — they would be "
@@ -65,6 +136,7 @@ SEED_GROUPS = [
     },
     {
         "name": "Semiconductors",
+        "market": "US",
         "primary_multiple": "ev_ebitda",
         "description": (
             "Cyclical and capital intensive — the group where standard metrics mislead "
@@ -83,6 +155,7 @@ SEED_GROUPS = [
     },
     {
         "name": "Energy",
+        "market": "US",
         "primary_multiple": "ev_ebitda",
         "description": (
             "Commodity-driven, so the thesis is cash return rather than growth. Revenue "
@@ -138,13 +211,14 @@ def seed(conn, user_id: int | None = None, reset: bool = False,
     for spec in SEED_GROUPS:
         conn.execute(
             """
-            INSERT INTO metric_groups (user_id, name, primary_multiple, description, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO metric_groups (user_id, name, market, primary_multiple, description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, name) DO UPDATE SET
                 primary_multiple = excluded.primary_multiple,
                 description = excluded.description
             """,
-            (user_id, spec["name"], spec["primary_multiple"], spec["description"], _now()),
+            (user_id, spec["name"], spec.get("market", "US"),
+             spec["primary_multiple"], spec["description"], _now()),
         )
         group_id = conn.execute(
             "SELECT id FROM metric_groups WHERE name = ? AND user_id IS ?",

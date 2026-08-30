@@ -20,6 +20,8 @@ export type MetricStats = {
 export type GroupRef = { id: number; name: string; primaryMultiple: string };
 
 export type WatchlistRow = {
+  market: string;
+  currency: string;
   ticker: string;
   name: string;
   date: string;
@@ -355,7 +357,9 @@ export function getWatchlist(userId: number): WatchlistRow[] {
   const conn = db();
   const watchlist = conn
     .prepare(
-      `SELECT w.ticker, t.name, w.default_group_id
+      `SELECT w.ticker, t.name, w.default_group_id,
+              COALESCE(t.market, 'US') AS market,
+              COALESCE(t.quote_currency, 'USD') AS currency
        FROM watchlist w
        JOIN tickers t ON t.ticker = w.ticker
        WHERE w.user_id = ? AND t.supported = 1
@@ -363,6 +367,7 @@ export function getWatchlist(userId: number): WatchlistRow[] {
     )
     .all(userId) as {
     ticker: string; name: string; default_group_id: number | null;
+    market: string; currency: string;
   }[];
 
   const rows: WatchlistRow[] = [];
@@ -394,6 +399,8 @@ export function getWatchlist(userId: number): WatchlistRow[] {
     rows.push({
       ticker: w.ticker,
       name: w.name,
+      market: w.market,
+      currency: w.currency,
       date: latest.date,
       close: latest.close,
       changePct:

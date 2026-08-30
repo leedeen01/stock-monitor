@@ -109,6 +109,19 @@ METRICS: tuple[Metric, ...] = (
            "usually pricing in decline. The question is whether you disagree."
        ),
        higher_is_better=True, show_percentile=True, invert_percentile=True),
+    _m("dividend_yield", "Dividend Yield", "percent", PAYING,
+       "Trailing twelve-month dividends per share over price. Split-adjusted, so a "
+       "payment made before a split stays comparable with the price series after it.",
+       usage=(
+           "The metric REITs and income names are actually bought for, and the one "
+           "most likely to be a trap. A yield that rose because the price fell is not "
+           "the same as one that rose because the payout grew."
+           "\n\n"
+           "Read it against interest coverage and Net Debt/EBITDA. A distribution "
+           "funded by borrowing lasts exactly as long as the borrowing does, which is "
+           "the whole story of a leveraged REIT in a rising-rate cycle."
+       ),
+       higher_is_better=True, show_percentile=True, invert_percentile=True),
     _m("ps_ttm", "P/S", "multiple", PAYING,
        "Price over trailing sales.",
        usage=(

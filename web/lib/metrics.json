@@ -61,6 +61,18 @@
       "peer_comparable": true
     },
     {
+      "key": "dividend_yield",
+      "label": "Dividend Yield",
+      "fmt": "percent",
+      "section": "paying",
+      "description": "Trailing twelve-month dividends per share over price. Split-adjusted, so a payment made before a split stays comparable with the price series after it.",
+      "usage": "The metric REITs and income names are actually bought for, and the one most likely to be a trap. A yield that rose because the price fell is not the same as one that rose because the payout grew.\n\nRead it against interest coverage and Net Debt/EBITDA. A distribution funded by borrowing lasts exactly as long as the borrowing does, which is the whole story of a leveraged REIT in a rising-rate cycle.",
+      "higher_is_better": true,
+      "show_percentile": true,
+      "invert_percentile": true,
+      "peer_comparable": true
+    },
+    {
       "key": "ps_ttm",
       "label": "P/S",
       "fmt": "multiple",
