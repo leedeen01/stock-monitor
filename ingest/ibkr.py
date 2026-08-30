@@ -187,6 +187,7 @@ def parse(xml: bytes) -> dict:
             "report_date": _date(el.get("reportDate")),
             "ticker": symbol,
             "conid": el.get("conid"),
+            "description": (el.get("description") or "").strip() or None,
             "asset_class": el.get("assetCategory"),
             "currency": el.get("currency"),
             "quantity": _num(el.get("position") or el.get("quantity")),
@@ -259,11 +260,14 @@ def store(conn: sqlite3.Connection, user_id: int, parsed: dict) -> dict[str, int
     # that is what lets the daily job discover it and fetch its filings.
     conn.executemany(
         """
-        INSERT INTO tickers (ticker, ibkr_conid, asset_class, first_seen_at)
-        VALUES (:ticker, :conid, :asset_class, datetime('now'))
+        INSERT INTO tickers (ticker, name, ibkr_conid, asset_class, first_seen_at)
+        VALUES (:ticker, :description, :conid, :asset_class, datetime('now'))
         ON CONFLICT(ticker) DO UPDATE SET
             ibkr_conid = COALESCE(excluded.ibkr_conid, tickers.ibkr_conid),
-            asset_class = COALESCE(excluded.asset_class, tickers.asset_class)
+            asset_class = COALESCE(excluded.asset_class, tickers.asset_class),
+            -- EDGAR's name wins when we have it; IBKR's description is a
+            -- fallback so a non-filer is not left nameless.
+            name = COALESCE(tickers.name, excluded.name)
         """,
         [p for p in parsed["positions"] if p["ticker"]],
     )
@@ -349,9 +353,11 @@ def record_sync(conn, user_id: int, status: str, detail: str) -> None:
 def unmatched_tickers(conn, user_id: int) -> list[str]:
     """Holdings whose symbol is not in the shared registry.
 
-    Not an error — you can hold something you never added to a watchlist — but
-    worth surfacing, since those positions have no valuation history behind
-    them and would otherwise appear as blanks with no explanation.
+    Not an error — you can hold something never researched here — but worth
+    surfacing, since those positions have no valuation history behind them.
+
+    Excludes anything already ruled out as unvaluable, so a European ETF is
+    reported once and then stops being mentioned every single morning.
     """
     return [
         r["ticker"]
@@ -359,7 +365,7 @@ def unmatched_tickers(conn, user_id: int) -> list[str]:
             """
             SELECT DISTINCT h.ticker FROM holdings h
             LEFT JOIN tickers t ON t.ticker = h.ticker
-            WHERE h.user_id = ? AND t.cik IS NULL
+            WHERE h.user_id = ? AND t.cik IS NULL AND COALESCE(t.supported, 1) = 1
               AND h.report_date = (SELECT MAX(report_date) FROM holdings WHERE user_id = ?)
             ORDER BY h.ticker
             """,

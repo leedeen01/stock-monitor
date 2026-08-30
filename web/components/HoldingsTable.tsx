@@ -51,12 +51,19 @@ export function HoldingsTable({ holdings }: { holdings: Holding[] }) {
                   <span className="font-medium">{h.ticker}</span>
                 )}
                 <div className="truncate text-xs text-neutral-500">
-                  {h.name ?? (
-                    // Held but never ingested, so there is no valuation history
-                    // behind it. Saying so beats a row of blanks.
-                    <span className="text-amber-600 dark:text-amber-500">
-                      not on your watchlist
+                  {/* Three different blanks, and they mean different things.
+                      A non-filer will never have metrics; an unwatched holding
+                      just has not been researched yet. */}
+                  {!h.valuable ? (
+                    <span className="text-neutral-400">
+                      {h.name ?? "no SEC filings — held, not valued"}
                     </span>
+                  ) : (
+                    (h.name ?? (
+                      <span className="text-amber-600 dark:text-amber-500">
+                        not researched yet
+                      </span>
+                    ))
                   )}
                 </div>
               </td>

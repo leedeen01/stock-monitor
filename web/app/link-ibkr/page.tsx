@@ -1,4 +1,5 @@
 import { LinkIbkrForm } from "@/components/AuthForms";
+import { FlexQuerySetup } from "@/components/FlexQuerySetup";
 import { requirePage } from "@/lib/guard";
 import { getLink } from "@/lib/ibkr";
 import { encryptionConfigured } from "@/lib/secrets";
@@ -13,7 +14,7 @@ export default async function LinkIbkrPage(props: PageProps<"/link-ibkr">) {
   const existing = getLink(user.id);
 
   return (
-    <main className="mx-auto flex w-full max-w-lg flex-col gap-6 px-4 py-16">
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-16">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">
           {existing.linked ? "Update your IBKR link" : "Link your IBKR account"}
@@ -33,30 +34,7 @@ export default async function LinkIbkrPage(props: PageProps<"/link-ibkr">) {
         </Notice>
       ) : (
         <>
-          <section className="rounded-lg border border-neutral-200 p-4 text-sm dark:border-neutral-800">
-            <h2 className="font-medium">Where to find these</h2>
-            <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-neutral-600 dark:text-neutral-400">
-              <li>
-                In IBKR Client Portal, go to{" "}
-                <strong>Performance &amp; Reports → Flex Queries</strong>.
-              </li>
-              <li>
-                Create an <strong>Activity Flex Query</strong> including{" "}
-                <em>Open Positions</em>, and note the numeric{" "}
-                <strong>query id</strong> beside it.
-              </li>
-              <li>
-                Under <strong>Flex Web Service</strong>, generate a token and
-                copy it.
-              </li>
-            </ol>
-            <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-500">
-              The token is read-only — it fetches statements and cannot place
-              trades. It is stored encrypted, never shown again, and never sent
-              to your browser. Flex data refreshes once daily overnight, so
-              holdings here lag the market by a day by design.
-            </p>
-          </section>
+          <FlexQuerySetup />
 
           {existing.linked && (
             <p className="text-xs text-neutral-500 dark:text-neutral-400">

@@ -288,3 +288,37 @@ def test_secrets_round_trip_matches_the_web_format(monkeypatch):
     assert sealed.startswith("v1.")
     assert len(sealed.split(".")) == 4
     assert store.decrypt(sealed) == "flex-token-abc123"
+
+
+def test_a_non_sec_symbol_is_ruled_out_not_retried(tmp_path):
+    """SPYL and friends — European UCITS ETFs — are real holdings with no SEC
+    filings. Retrying them at EDGAR every morning would leave the daily run
+    permanently 'partial' and the freshness banner permanently warning."""
+    import backfill
+
+    conn = db.connect(tmp_path / "etf.db")
+    db.init_schema(conn)
+    seed_user(conn)
+
+    etf = POSITION.replace('symbol="AAPL"', 'symbol="SPYL"')
+    ibkr.store(conn, 1, ibkr.parse(_statement(positions=etf)))
+
+    # Discovered and reported the first time...
+    assert ibkr.unmatched_tickers(conn, 1) == ["SPYL"]
+
+    backfill.mark_unsupported(conn, "SPYL", "not an SEC filer")
+
+    # ...then ruled out, so it stops being chased.
+    assert ibkr.unmatched_tickers(conn, 1) == []
+    row = conn.execute(
+        "SELECT supported, unsupported_reason FROM tickers WHERE ticker='SPYL'"
+    ).fetchone()
+    assert row["supported"] == 0
+    assert "SEC filer" in row["unsupported_reason"]
+
+    # The holding itself is untouched: quantity and cost basis still work.
+    held = conn.execute(
+        "SELECT quantity, cost_basis_money FROM holdings WHERE ticker='SPYL'"
+    ).fetchone()
+    assert held["quantity"] == 100
+    conn.close()

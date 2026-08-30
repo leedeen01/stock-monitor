@@ -138,6 +138,15 @@ def main(job_id: int | None = None) -> int:
     for ticker in tickers:
         try:
             backfill.backfill_fundamentals(conn, ticker, verbose=True)
+        except KeyError:
+            # Not in the SEC registry. Almost always a non-US ETF or fund
+            # arriving from the brokerage — real to hold, impossible to value
+            # from filings. Recording that stops it being retried daily.
+            backfill.mark_unsupported(
+                conn, ticker,
+                "not an SEC filer - no filings to value it from",
+            )
+            print(f"{ticker}: not an SEC filer, marked unsupported")
         except Exception as exc:  # noqa: BLE001 - one bad ticker shouldn't stop the run
             failures.append(f"{ticker} fundamentals: {type(exc).__name__}: {exc}")
             print(f"{ticker}: FAILED - {exc}")

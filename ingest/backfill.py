@@ -62,6 +62,27 @@ def ensure_ticker(conn: sqlite3.Connection, ticker: str, name: str, cik: int) ->
     conn.commit()
 
 
+def mark_unsupported(conn: sqlite3.Connection, ticker: str, reason: str) -> None:
+    """Record that a ticker cannot be valued, so the pipeline stops retrying.
+
+    Plenty of things worth holding are not SEC filers — European UCITS ETFs,
+    foreign ordinaries, money market funds. Retrying them at EDGAR every
+    morning would leave the daily run permanently 'partial' and the freshness
+    banner permanently warning about it, which trains you to ignore the one
+    signal that is supposed to mean something.
+    """
+    conn.execute(
+        """
+        INSERT INTO tickers (ticker, supported, unsupported_reason, first_seen_at)
+        VALUES (?, 0, ?, datetime('now'))
+        ON CONFLICT(ticker) DO UPDATE SET
+            supported = 0, unsupported_reason = excluded.unsupported_reason
+        """,
+        (ticker.upper(), reason),
+    )
+    conn.commit()
+
+
 def log_ingest(conn: sqlite3.Connection, ticker: str, source: str, status: str, detail: str) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO ingest_log (ticker, source, ran_at, status, detail) VALUES (?, ?, ?, ?, ?)",

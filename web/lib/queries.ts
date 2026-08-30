@@ -672,6 +672,8 @@ export type Holding = {
   percentile: number | null;
   revenueGrowth: number | null;
   onWatchlist: boolean;
+  /** False when it has no SEC filings — a non-US ETF, say. Held, not valued. */
+  valuable: boolean;
 };
 
 export type PortfolioSummary = {
@@ -707,6 +709,7 @@ export function getHoldings(userId: number): Holding[] {
       `SELECT h.ticker, t.name, h.quantity, h.cost_basis_price, h.cost_basis_money,
               h.mark_price, h.position_value, h.unrealized_pnl, h.percent_of_nav,
               w.ticker IS NOT NULL AS on_watchlist,
+              COALESCE(t.supported, 1) AS supported,
               g.primary_multiple AS primary_key
          FROM holdings h
          LEFT JOIN tickers t ON t.ticker = h.ticker
@@ -723,7 +726,7 @@ export function getHoldings(userId: number): Holding[] {
       cost_basis_price: number | null; cost_basis_money: number | null;
       mark_price: number | null; position_value: number | null;
       unrealized_pnl: number | null; percent_of_nav: number | null;
-      on_watchlist: number; primary_key: string | null;
+      on_watchlist: number; supported: number; primary_key: string | null;
     };
 
     // Fall back to P/E when the holding is on no watchlist and so has no group
@@ -757,6 +760,7 @@ export function getHoldings(userId: number): Holding[] {
       percentile: stats?.sufficient ? stats.percentile : null,
       revenueGrowth: growth?.g ?? null,
       onWatchlist: Boolean(row.on_watchlist),
+      valuable: Boolean(row.supported),
     };
   });
 }
